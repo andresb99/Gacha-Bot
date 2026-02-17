@@ -26,7 +26,11 @@ async function publishBoardToChannelName(client, engine, channelName = "gacha-bo
     if (!targetChannel || typeof targetChannel.send !== "function") continue;
 
     try {
-      await sendBoardCarousel(targetChannel, board, boardDate);
+      await sendBoardCarousel(targetChannel, board, boardDate, {
+        ownerId: null,
+        timeoutMs: 0,
+        disableOnEnd: false,
+      });
       published += 1;
     } catch (error) {
       console.error(

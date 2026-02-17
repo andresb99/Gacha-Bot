@@ -1,7 +1,7 @@
 const { buildBoardEmbed, buildBoardCarouselEmbed } = require("./embeds");
 const { sendImageCarousel } = require("./imageCarousel");
 
-async function sendBoardCarousel(message, board, boardDate) {
+async function sendBoardCarousel(message, board, boardDate, options = {}) {
   const sendFn =
     message && typeof message.reply === "function"
       ? (payload) => message.reply(payload)
@@ -13,7 +13,11 @@ async function sendBoardCarousel(message, board, boardDate) {
   }
 
   const ownerId =
-    message && message.author && typeof message.author.id === "string" ? message.author.id : null;
+    typeof options?.ownerId === "string" || options?.ownerId === null
+      ? options.ownerId
+      : message && message.author && typeof message.author.id === "string"
+        ? message.author.id
+        : null;
   await sendImageCarousel({
     send: sendFn,
     ownerId,
@@ -22,6 +26,8 @@ async function sendBoardCarousel(message, board, boardDate) {
     buildSlideEmbed: (index) => buildBoardCarouselEmbed(board, boardDate, index),
     buildListEmbed: () => buildBoardEmbed(board || [], boardDate),
     buildEmptyEmbed: () => buildBoardEmbed([], boardDate),
+    timeoutMs: options?.timeoutMs,
+    disableOnEnd: options?.disableOnEnd,
   });
 }
 

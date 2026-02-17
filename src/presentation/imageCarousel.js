@@ -53,6 +53,7 @@ async function sendImageCarousel({
   buildEmptyEmbed,
   onSlideChange,
   timeoutMs = DEFAULT_CAROUSEL_TIMEOUT_MS,
+  disableOnEnd = true,
 }) {
   const sendFn =
     typeof send === "function"
@@ -83,10 +84,14 @@ async function sendImageCarousel({
   });
   runSlideChangeHook(onSlideChange, currentIndex, totalItems);
 
-  const collector = response.createMessageComponentCollector({
+  const collectorOptions = {
     componentType: ComponentType.Button,
-    time: timeoutMs,
-  });
+  };
+  if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+    collectorOptions.time = Number(timeoutMs);
+  }
+
+  const collector = response.createMessageComponentCollector(collectorOptions);
 
   collector.on("collect", async (interaction) => {
     if (restrictedOwnerId && interaction.user.id !== restrictedOwnerId) {
@@ -136,6 +141,7 @@ async function sendImageCarousel({
   });
 
   collector.on("end", async () => {
+    if (!disableOnEnd) return;
     try {
       await response.edit({
         components: [buildCarouselRow(idPrefix, sessionId, { disabled: true, showingList })],
