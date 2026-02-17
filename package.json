@@ -1,0 +1,19 @@
+{
+  "name": "gacha-bot",
+  "version": "1.0.0",
+  "description": "Discord anime gachapon bot with daily rolls and popularity-based drop rates",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^13.0.2"
+  }
+}
