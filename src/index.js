@@ -34,7 +34,7 @@ async function bootstrapBot() {
     console.log(`[Bot] conectado como ${client.user.tag}`);
     try {
       await engine.bootstrap();
-      startMaintenanceJobs(engine, 1);
+      startMaintenanceJobs(engine, 1, { client, channelName: "gacha-bot" });
       gachaReady = true;
       console.log("[Bot] gacha inicializado");
     } catch (error) {

@@ -44,6 +44,7 @@ function runSlideChangeHook(onSlideChange, index, totalItems) {
 
 async function sendImageCarousel({
   message,
+  send,
   ownerId,
   idPrefix,
   totalItems,
@@ -53,15 +54,30 @@ async function sendImageCarousel({
   onSlideChange,
   timeoutMs = DEFAULT_CAROUSEL_TIMEOUT_MS,
 }) {
+  const sendFn =
+    typeof send === "function"
+      ? send
+      : message && typeof message.reply === "function"
+        ? (payload) => message.reply(payload)
+        : message && typeof message.send === "function"
+          ? (payload) => message.send(payload)
+          : null;
+  if (!sendFn) {
+    throw new Error("sendImageCarousel requiere `message` con .reply/.send o un callback `send`.");
+  }
+
+  const restrictedOwnerId =
+    typeof ownerId === "string" && ownerId.trim().length > 0 ? ownerId.trim() : null;
+
   if (!totalItems || totalItems <= 0) {
-    await message.reply({ embeds: [buildEmptyEmbed()] });
+    await sendFn({ embeds: [buildEmptyEmbed()] });
     return;
   }
 
   const sessionId = Date.now().toString(36);
   let currentIndex = 0;
   let showingList = false;
-  const response = await message.reply({
+  const response = await sendFn({
     embeds: [buildSlideEmbed(currentIndex)],
     components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
   });
@@ -73,7 +89,7 @@ async function sendImageCarousel({
   });
 
   collector.on("collect", async (interaction) => {
-    if (interaction.user.id !== ownerId) {
+    if (restrictedOwnerId && interaction.user.id !== restrictedOwnerId) {
       await interaction.reply({
         content: "Solo quien ejecuto el comando puede usar este carrusel.",
         ephemeral: true,
