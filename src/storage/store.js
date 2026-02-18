@@ -8,6 +8,7 @@ const DEFAULT_GACHA_STATE = {
   poolUpdatedAt: null,
   mythicCharacters: [],
   mythicCatalogUpdatedAt: null,
+  tradeOffers: [],
 };
 
 function clone(value) {

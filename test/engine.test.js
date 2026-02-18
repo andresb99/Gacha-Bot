@@ -29,7 +29,7 @@ function createConfig(overrides = {}) {
   };
 }
 
-function createCharacter(id, rarity, dropWeight) {
+function createCharacter(id, rarity, dropWeight, overrides = {}) {
   return {
     id,
     name: `${rarity}_${id}`,
@@ -43,6 +43,7 @@ function createCharacter(id, rarity, dropWeight) {
     source: "anilist",
     sources: ["anilist"],
     sourceIds: { anilist: id },
+    ...overrides,
   };
 }
 
@@ -54,6 +55,19 @@ function createBoardState(boardCharacters) {
     poolUpdatedAt: null,
     mythicCharacters: [],
     mythicCatalogUpdatedAt: null,
+    tradeOffers: [],
+  };
+}
+
+function createInventoryEntry(character, count = 1) {
+  return {
+    count,
+    character: {
+      ...character,
+      imageUrls: Array.isArray(character.imageUrls) ? character.imageUrls : [character.imageUrl],
+      sources: Array.isArray(character.sources) ? character.sources : ["anilist"],
+      sourceIds: character.sourceIds || { anilist: character.id },
+    },
   };
 }
 
@@ -189,4 +203,222 @@ test("getProfile expone thresholds de pity mitica", async () => {
   assert.equal(profile.mythicPityHardThreshold, 22);
   assert.equal(profile.pityCounter, 2);
   assert.equal(profile.pityThreshold, 22);
+});
+
+test("createTradeOffer + acceptTradeOffer intercambian unidades entre usuarios", async () => {
+  const shigeo = createCharacter("mob_shigeo", "mythic", 0.5, {
+    name: "Shigeo Kageyama",
+    anime: "Mob Psycho 100",
+    popularityRank: 42,
+  });
+  const light = createCharacter("dn_light", "legendary", 2.5, {
+    name: "Light Yagami",
+    anime: "Death Note",
+    popularityRank: 88,
+  });
+  const store = new InMemoryStore({
+    gachaState: createBoardState([shigeo, light]),
+    users: {
+      alice: {
+        username: "alice",
+        displayName: "Alice",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 12,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [shigeo.id]: createInventoryEntry(shigeo, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+      bob: {
+        username: "bob",
+        displayName: "Bob",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 7,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [light.id]: createInventoryEntry(light, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+  const engine = new GachaEngine(store, createConfig());
+  engine.gachaState = createBoardState([shigeo, light]);
+
+  const created = await engine.createTradeOffer({
+    proposerId: "alice",
+    targetId: "bob",
+    offeredQuery: "Shigeo Kageyama de Mob Psycho",
+    requestedQuery: "Light Yagami de Death Note",
+    proposerMeta: { username: "alice", displayName: "Alice" },
+    targetMeta: { username: "bob", displayName: "Bob" },
+  });
+  assert.equal(created.error, undefined);
+  assert.ok(created.offer?.id);
+
+  const accepted = await engine.acceptTradeOffer(created.offer.id, "bob", {
+    username: "bob",
+    displayName: "Bob",
+  });
+  assert.equal(accepted.error, undefined);
+  assert.equal(accepted.offer.status, "accepted");
+
+  const aliceAfter = await store.getUser("alice");
+  const bobAfter = await store.getUser("bob");
+  assert.equal(aliceAfter.inventory?.[light.id]?.count, 1);
+  assert.equal(aliceAfter.inventory?.[shigeo.id], undefined);
+  assert.equal(bobAfter.inventory?.[shigeo.id]?.count, 1);
+  assert.equal(bobAfter.inventory?.[light.id], undefined);
+});
+
+test("acceptTradeOffer falla si el oferente ya no tiene la unidad", async () => {
+  const shigeo = createCharacter("mob_shigeo", "mythic", 0.5, {
+    name: "Shigeo Kageyama",
+    anime: "Mob Psycho 100",
+  });
+  const light = createCharacter("dn_light", "legendary", 2.5, {
+    name: "Light Yagami",
+    anime: "Death Note",
+  });
+  const store = new InMemoryStore({
+    gachaState: createBoardState([shigeo, light]),
+    users: {
+      alice: {
+        username: "alice",
+        displayName: "Alice",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 12,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [shigeo.id]: createInventoryEntry(shigeo, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+      bob: {
+        username: "bob",
+        displayName: "Bob",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 7,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [light.id]: createInventoryEntry(light, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+  const engine = new GachaEngine(store, createConfig());
+  engine.gachaState = createBoardState([shigeo, light]);
+
+  const created = await engine.createTradeOffer({
+    proposerId: "alice",
+    targetId: "bob",
+    offeredQuery: shigeo.id,
+    requestedQuery: light.id,
+    proposerMeta: { username: "alice", displayName: "Alice" },
+    targetMeta: { username: "bob", displayName: "Bob" },
+  });
+  assert.equal(created.error, undefined);
+  assert.ok(created.offer?.id);
+
+  const proposerUser = await store.getUser("alice");
+  proposerUser.inventory = {};
+  await store.saveUser("alice", proposerUser);
+
+  const accepted = await engine.acceptTradeOffer(created.offer.id, "bob", {
+    username: "bob",
+    displayName: "Bob",
+  });
+  assert.match(String(accepted.error || ""), /ya no tiene/i);
+
+  const stateAfter = await store.getGachaState();
+  const tradeAfter = (stateAfter.tradeOffers || []).find((entry) => entry.id === created.offer.id);
+  assert.equal(tradeAfter.status, "pending");
+});
+
+test("listTradeOffersForUser separa pendientes y resueltos", async () => {
+  const shigeo = createCharacter("mob_shigeo", "mythic", 0.5, {
+    name: "Shigeo Kageyama",
+    anime: "Mob Psycho 100",
+  });
+  const light = createCharacter("dn_light", "legendary", 2.5, {
+    name: "Light Yagami",
+    anime: "Death Note",
+  });
+  const store = new InMemoryStore({
+    gachaState: createBoardState([shigeo, light]),
+    users: {
+      alice: {
+        username: "alice",
+        displayName: "Alice",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 12,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [shigeo.id]: createInventoryEntry(shigeo, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+      bob: {
+        username: "bob",
+        displayName: "Bob",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 7,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [light.id]: createInventoryEntry(light, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+  const engine = new GachaEngine(store, createConfig());
+  engine.gachaState = createBoardState([shigeo, light]);
+
+  const created = await engine.createTradeOffer({
+    proposerId: "alice",
+    targetId: "bob",
+    offeredQuery: shigeo.id,
+    requestedQuery: light.id,
+    proposerMeta: { username: "alice", displayName: "Alice" },
+    targetMeta: { username: "bob", displayName: "Bob" },
+  });
+  assert.equal(created.error, undefined);
+
+  const bobPending = await engine.listTradeOffersForUser("bob", { username: "bob", displayName: "Bob" });
+  assert.equal(bobPending.incomingPending.length, 1);
+  assert.equal(bobPending.outgoingPending.length, 0);
+  assert.equal(bobPending.recentResolved.length, 0);
+
+  const rejected = await engine.rejectTradeOffer(created.offer.id, "bob", {
+    username: "bob",
+    displayName: "Bob",
+  });
+  assert.equal(rejected.error, undefined);
+  assert.equal(rejected.offer.status, "rejected");
+
+  const bobAfter = await engine.listTradeOffersForUser("bob", { username: "bob", displayName: "Bob" });
+  assert.equal(bobAfter.incomingPending.length, 0);
+  assert.equal(bobAfter.recentResolved.length, 1);
+  assert.equal(bobAfter.recentResolved[0].id, created.offer.id);
+  assert.equal(bobAfter.recentResolved[0].status, "rejected");
 });

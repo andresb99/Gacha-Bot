@@ -55,6 +55,8 @@ function buildHelpEmbed(prefix) {
         `\`${prefix}gacha daily\` - Reclama tiradas extra por cooldown`,
         `\`${prefix}gacha timer\` - Tiempo restante para refresh del board`,
         `\`${prefix}gacha contract [rareza] [cantidad] [--pick id[:copias],...]\` - Convierte personajes por rareza`,
+        `\`${prefix}gacha trade offer @user --give "<tu personaje>" --want "<personaje objetivo>"\` - Crea trade entre usuarios`,
+        `\`${prefix}gacha trade list|accept|reject|cancel\` - Gestiona tus trades pendientes`,
         `\`${prefix}gacha profile\` - Muestra tus stats`,
         `\`${prefix}gacha inventory [@user]\` - Muestra inventario`,
         `\`${prefix}gacha refreshboard\` - Regenera tablero (solo admin configurado)`,

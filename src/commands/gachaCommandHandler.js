@@ -13,6 +13,7 @@ const { formatDuration } = require("../utils/time");
 
 const MAX_ROLLS_PER_COMMAND = 50;
 const MAX_CONTRACT_PREVIEW_REWARDS = 8;
+const MAX_TRADE_PREVIEW_LINES = 8;
 const ROLL_RARITY_ORDER = ["mythic", "legendary", "epic", "rare", "common"];
 const ROLL_RARITY_LABELS = {
   common: "Comun",
@@ -20,6 +21,13 @@ const ROLL_RARITY_LABELS = {
   epic: "Epico",
   legendary: "Legendario",
   mythic: "Mitico",
+};
+const TRADE_STATUS_LABELS = {
+  pending: "Pendiente",
+  accepted: "Aceptado",
+  rejected: "Rechazado",
+  cancelled: "Cancelado",
+  expired: "Expirado",
 };
 const CONTRACT_RARITY_ALIASES = {
   common: "common",
@@ -54,9 +62,177 @@ function normalizeSubcommand(rawSubcommand) {
   if (["profile", "stats"].includes(value)) return "profile";
   if (["inv", "inventory", "collection"].includes(value)) return "inventory";
   if (["contract", "tradeup", "exchange"].includes(value)) return "contract";
+  if (["trade", "trades", "swap", "intercambio"].includes(value)) return "trade";
   if (["character", "char"].includes(value)) return "character";
   if (["refreshboard", "resetboard"].includes(value)) return "refreshboard";
   return "unknown";
+}
+
+function normalizeTradeAction(rawAction) {
+  const value = String(rawAction || "help")
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+
+  if (["help", "ayuda"].includes(value)) return "help";
+  if (["list", "ls", "status", "pending", "pendings"].includes(value)) return "list";
+  if (["offer", "propose", "create", "crear", "proponer"].includes(value)) return "offer";
+  if (["accept", "aceptar", "ok"].includes(value)) return "accept";
+  if (["reject", "rechazar", "deny", "decline"].includes(value)) return "reject";
+  if (["cancel", "cancelar", "remove"].includes(value)) return "cancel";
+  return "unknown";
+}
+
+function extractMentionedUserId(rawValue) {
+  const token = String(rawValue || "").trim();
+  const match = token.match(/^<@!?(\d+)>$/);
+  return match ? String(match[1]) : null;
+}
+
+function unwrapQuotedValue(rawValue) {
+  const value = String(rawValue || "").trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function splitBySeparator(rawInput, separatorRegex) {
+  const text = String(rawInput || "").trim();
+  const regex = new RegExp(separatorRegex.source, separatorRegex.flags.replace("g", ""));
+  const match = regex.exec(text);
+  if (!match || typeof match.index !== "number") return null;
+
+  const left = text.slice(0, match.index).trim();
+  const right = text.slice(match.index + match[0].length).trim();
+  if (!left || !right) return null;
+  return [left, right];
+}
+
+function parseTradeOfferDetails(rawInput) {
+  const input = String(rawInput || "").trim();
+  if (!input) {
+    return {
+      valid: false,
+      giveQuery: null,
+      wantQuery: null,
+      error:
+        "Debes indicar que ofreces y que pides. Ejemplo: `--give \"Shigeo Kageyama\" --want \"Light Yagami\"`.",
+    };
+  }
+
+  const byFlags = {};
+  const flagRegex = /--(give|want)\s+("[^"]+"|'[^']+'|[\s\S]+?)(?=\s--(?:give|want)\b|$)/gi;
+  let match = flagRegex.exec(input);
+  while (match) {
+    const key = String(match[1] || "")
+      .trim()
+      .toLowerCase();
+    const value = unwrapQuotedValue(match[2]);
+    if (key && value) {
+      byFlags[key] = value;
+    }
+    match = flagRegex.exec(input);
+  }
+  if (byFlags.give && byFlags.want) {
+    return {
+      valid: true,
+      giveQuery: byFlags.give,
+      wantQuery: byFlags.want,
+      error: null,
+    };
+  }
+
+  for (const separator of [/\s+por\s+/i, /\s+for\s+/i, /\s*->\s*/i, /\s*=>\s*/i]) {
+    const parts = splitBySeparator(input, separator);
+    if (parts) {
+      return {
+        valid: true,
+        giveQuery: unwrapQuotedValue(parts[0]),
+        wantQuery: unwrapQuotedValue(parts[1]),
+        error: null,
+      };
+    }
+  }
+
+  const quotedValues = [];
+  const quotedRegex = /"([^"]+)"|'([^']+)'/g;
+  let quotedMatch = quotedRegex.exec(input);
+  while (quotedMatch) {
+    const value = unwrapQuotedValue(quotedMatch[1] || quotedMatch[2] || "");
+    if (value) quotedValues.push(value);
+    quotedMatch = quotedRegex.exec(input);
+  }
+  if (quotedValues.length >= 2) {
+    return {
+      valid: true,
+      giveQuery: quotedValues[0],
+      wantQuery: quotedValues[1],
+      error: null,
+    };
+  }
+
+  const tokens = input.split(/\s+/).filter(Boolean);
+  if (tokens.length === 2) {
+    return {
+      valid: true,
+      giveQuery: unwrapQuotedValue(tokens[0]),
+      wantQuery: unwrapQuotedValue(tokens[1]),
+      error: null,
+    };
+  }
+
+  return {
+    valid: false,
+    giveQuery: null,
+    wantQuery: null,
+    error:
+      "No pude interpretar la oferta. Usa `--give <tu personaje>` y `--want <personaje objetivo>`.",
+  };
+}
+
+function formatTradeCharacterLabel(character, fallbackId = "") {
+  const name = String(character?.name || "").trim();
+  const anime = String(character?.anime || "").trim();
+  const id = String(character?.id || fallbackId || "").trim();
+  if (name && anime) return `${name} (${anime})`;
+  if (name) return name;
+  return id || "Desconocido";
+}
+
+function formatTradeExpiry(expiresAt) {
+  if (!expiresAt || Number.isNaN(Date.parse(expiresAt))) return "";
+  const msRemaining = Date.parse(expiresAt) - Date.now();
+  if (msRemaining <= 0) return " | expirada";
+  return ` | expira en ${formatDuration(msRemaining)}`;
+}
+
+function formatTradeLine(offer, mode) {
+  const giveLabel = formatTradeCharacterLabel(offer?.offeredCharacter, offer?.offeredCharacterId);
+  const wantLabel = formatTradeCharacterLabel(offer?.requestedCharacter, offer?.requestedCharacterId);
+  const expiresText = formatTradeExpiry(offer?.expiresAt);
+  const statusLabel = TRADE_STATUS_LABELS[String(offer?.status || "").toLowerCase()] || "Desconocido";
+
+  if (mode === "incoming") {
+    return `- \`${offer.id}\` <@${offer.proposerId}> ofrece **${giveLabel}** por **${wantLabel}**${expiresText}`;
+  }
+
+  if (mode === "outgoing") {
+    return `- \`${offer.id}\` Ofreces **${giveLabel}** a <@${offer.targetId}> por **${wantLabel}**${expiresText}`;
+  }
+
+  return `- \`${offer.id}\` ${statusLabel}: <@${offer.proposerId}> -> <@${offer.targetId}> | **${giveLabel}** por **${wantLabel}**`;
+}
+
+function limitTradeLines(lines, maxLines = MAX_TRADE_PREVIEW_LINES) {
+  const safeLines = Array.isArray(lines) ? lines : [];
+  if (safeLines.length <= maxLines) return safeLines;
+  return [...safeLines.slice(0, maxLines), `... y ${safeLines.length - maxLines} mas`];
 }
 
 function canUseRefreshBoard(message, config) {
@@ -288,48 +464,9 @@ function createGachaMessageHandler({ engine, config }) {
           return;
         }
 
-        const rarityCounts = {};
-        for (const entry of multiResult.results) {
-          const rarity = String(entry?.character?.rarity || "common");
-          rarityCounts[rarity] = (rarityCounts[rarity] || 0) + 1;
-        }
-
-        const raritySummary = ROLL_RARITY_ORDER.filter((rarity) => rarityCounts[rarity] > 0)
-          .map((rarity) => `${ROLL_RARITY_LABELS[rarity] || rarity}: ${rarityCounts[rarity]}`)
-          .join(" | ");
-
-        const highlights = multiResult.results
-          .map((entry) => entry.character)
-          .filter((character) => ["mythic", "legendary"].includes(String(character?.rarity || "")))
-          .slice(0, 5)
-          .map((character) => `[${String(character.rarity || "?").charAt(0).toUpperCase()}] ${character.name}`);
-
-        const notes = [];
-        if (requestedRolls > MAX_ROLLS_PER_COMMAND) {
-          notes.push(`Limite por comando: ${MAX_ROLLS_PER_COMMAND}.`);
-        }
-        if (multiResult.executed < rollsToRun) {
-          notes.push(`Solo se pudieron hacer ${multiResult.executed}/${rollsToRun} por tiradas disponibles.`);
-        }
-
-        await message.reply(
-          [
-            `Tiradas: ${multiResult.executed}/${multiResult.requested}`,
-            `Rarezas: ${raritySummary || "Sin resultados"}`,
-            `Pity hard mitica: ${multiResult.mythicHardPityTriggeredCount} vez/veces`,
-            `Soft pity activo: ${multiResult.mythicSoftPityActiveCount} tirada(s)`,
-            `Pity mitica: ${multiResult.mythicPityCounter}/${multiResult.mythicPityHardThreshold} (soft ${multiResult.mythicPitySoftThreshold})`,
-            `Tiradas restantes: ${multiResult.user?.rollsLeft ?? 0}`,
-            highlights.length > 0 ? `Destacados: ${highlights.join(", ")}` : null,
-            notes.length > 0 ? notes.join(" ") : null,
-          ]
-            .filter(Boolean)
-            .join("\n")
-        );
-
         const sortedRollResults = sortMultiRollResults(multiResult.results);
         await sendRollResultsPagination(message, sortedRollResults, {
-          requested: multiResult.requested,
+          requested: requestedRolls,
           executed: multiResult.executed,
           pityCounter: multiResult.pityCounter,
           pityThreshold: multiResult.pityThreshold,
@@ -372,10 +509,28 @@ function createGachaMessageHandler({ engine, config }) {
       }
 
       if (subcommand === "inventory") {
-        const targetUser = message.mentions.users.first() || message.author;
-        const targetMember =
-          message.mentions.members.first() ||
-          (targetUser.id === message.author.id ? message.member : null);
+        const rawTargetToken = String(args[1] || "").trim();
+        let targetUser = message.author;
+        let targetMember = message.member;
+
+        if (rawTargetToken) {
+          const targetUserId = extractMentionedUserId(rawTargetToken);
+          if (!targetUserId) {
+            await message.reply(`Uso: \`${config.prefix}gacha inventory [@user]\`.`);
+            return;
+          }
+
+          targetUser =
+            message.mentions.users.get(targetUserId) ||
+            (await message.client.users.fetch(targetUserId).catch(() => null));
+          if (!targetUser) {
+            await message.reply("No pude encontrar ese usuario.");
+            return;
+          }
+
+          targetMember = message.guild?.members?.cache?.get(targetUserId) || null;
+        }
+
         const targetMeta = buildUserMeta(message, targetUser, targetMember);
         const inventory = await engine.getInventory(targetUser.id, targetMeta);
         await sendInventoryCarousel(message, inventory.entries, targetMeta.displayName || targetUser.username);
@@ -507,6 +662,201 @@ function createGachaMessageHandler({ engine, config }) {
           ]
             .filter(Boolean)
             .join("\n")
+        );
+        return;
+      }
+
+      if (subcommand === "trade") {
+        const tradeAction = normalizeTradeAction(args[1]);
+        const tradeUsageLines = [
+          `Uso: \`${config.prefix}gacha trade offer @usuario --give "<tu personaje o id>" --want "<personaje o id que pides>"\``,
+          `Tambien puedes usar: \`${config.prefix}gacha trade offer @usuario <lo_tuyo> por <lo_que_pides>\``,
+          `Gestion: \`${config.prefix}gacha trade list\`, \`${config.prefix}gacha trade accept <tradeId>\`, \`${config.prefix}gacha trade reject <tradeId>\`, \`${config.prefix}gacha trade cancel <tradeId>\``,
+        ];
+        const userMeta = buildUserMeta(message);
+
+        if (tradeAction === "help") {
+          await message.reply(tradeUsageLines.join("\n"));
+          return;
+        }
+
+        if (tradeAction === "list") {
+          const tradeInfo = await engine.listTradeOffersForUser(message.author.id, userMeta);
+          const incomingLines = limitTradeLines(
+            tradeInfo.incomingPending.map((offer) => formatTradeLine(offer, "incoming"))
+          );
+          const outgoingLines = limitTradeLines(
+            tradeInfo.outgoingPending.map((offer) => formatTradeLine(offer, "outgoing"))
+          );
+          const recentLines = limitTradeLines(
+            tradeInfo.recentResolved.map((offer) => formatTradeLine(offer, "history")),
+            5
+          );
+
+          await message.reply(
+            [
+              "**Trades recibidos (pendientes)**",
+              incomingLines.length > 0 ? incomingLines.join("\n") : "- Ninguno",
+              "",
+              "**Trades enviados (pendientes)**",
+              outgoingLines.length > 0 ? outgoingLines.join("\n") : "- Ninguno",
+              "",
+              "**Ultimos trades resueltos**",
+              recentLines.length > 0 ? recentLines.join("\n") : "- Sin historial",
+            ].join("\n")
+          );
+          return;
+        }
+
+        if (tradeAction === "offer") {
+          const targetUser = message.mentions.users.first();
+          if (!targetUser) {
+            await message.reply(
+              [
+                "Debes mencionar al usuario objetivo.",
+                tradeUsageLines[0],
+                tradeUsageLines[1],
+              ].join("\n")
+            );
+            return;
+          }
+
+          if (targetUser.bot) {
+            await message.reply("No puedes crear trades con bots.");
+            return;
+          }
+
+          const detailTokens = args
+            .slice(2)
+            .filter((token) => !/^<@!?\d+>$/.test(String(token || "").trim()));
+          const parsedTradeOffer = parseTradeOfferDetails(detailTokens.join(" "));
+          if (!parsedTradeOffer.valid) {
+            await message.reply(
+              [
+                parsedTradeOffer.error,
+                tradeUsageLines[0],
+                tradeUsageLines[1],
+              ].join("\n")
+            );
+            return;
+          }
+
+          const targetMember =
+            message.mentions.members.first() ||
+            (targetUser.id === message.author.id ? message.member : null);
+          const targetMeta = buildUserMeta(message, targetUser, targetMember);
+          const offerResult = await engine.createTradeOffer({
+            proposerId: message.author.id,
+            targetId: targetUser.id,
+            offeredQuery: parsedTradeOffer.giveQuery,
+            requestedQuery: parsedTradeOffer.wantQuery,
+            proposerMeta: userMeta,
+            targetMeta,
+          });
+
+          if (offerResult.error) {
+            await message.reply(offerResult.error);
+            return;
+          }
+
+          const offer = offerResult.offer;
+          await message.reply(
+            [
+              `Trade creado: \`${offer.id}\`.`,
+              `Ofreces **${formatTradeCharacterLabel(
+                offer.offeredCharacter,
+                offer.offeredCharacterId
+              )}** a <@${offer.targetId}> por **${formatTradeCharacterLabel(
+                offer.requestedCharacter,
+                offer.requestedCharacterId
+              )}**.`,
+              `La otra persona puede aceptar con: \`${config.prefix}gacha trade accept ${offer.id}\`.`,
+              offer.expiresAt ? `Expira en: ${formatTradeExpiry(offer.expiresAt).replace(/^ \| /, "")}.` : null,
+            ]
+              .filter(Boolean)
+              .join("\n")
+          );
+          return;
+        }
+
+        if (["accept", "reject", "cancel"].includes(tradeAction)) {
+          let tradeId = String(args[2] || "").trim();
+
+          if (!tradeId) {
+            const tradeInfo = await engine.listTradeOffersForUser(message.author.id, userMeta);
+            const candidates =
+              tradeAction === "cancel" ? tradeInfo.outgoingPending : tradeInfo.incomingPending;
+
+            if (!candidates.length) {
+              await message.reply(
+                `No tienes trades pendientes para esa accion. Usa \`${config.prefix}gacha trade list\`.`
+              );
+              return;
+            }
+
+            if (candidates.length > 1) {
+              const options = candidates.map((offer) => `\`${offer.id}\``).join(", ");
+              await message.reply(`Tienes multiples trades pendientes. Indica un ID: ${options}`);
+              return;
+            }
+
+            tradeId = String(candidates[0].id || "").trim();
+          }
+
+          if (!tradeId) {
+            await message.reply("Debes indicar un tradeId valido.");
+            return;
+          }
+
+          if (tradeAction === "accept") {
+            const result = await engine.acceptTradeOffer(tradeId, message.author.id, userMeta);
+            if (result.error) {
+              await message.reply(result.error);
+              return;
+            }
+
+            const trade = result.offer;
+            await message.reply(
+              [
+                `Trade \`${trade.id}\` aceptado.`,
+                `<@${trade.proposerId}> recibe **${formatTradeCharacterLabel(
+                  result.requestedCharacter,
+                  trade.requestedCharacterId
+                )}** y <@${trade.targetId}> recibe **${formatTradeCharacterLabel(
+                  result.offeredCharacter,
+                  trade.offeredCharacterId
+                )}**.`,
+              ].join("\n")
+            );
+            return;
+          }
+
+          if (tradeAction === "reject") {
+            const result = await engine.rejectTradeOffer(tradeId, message.author.id, userMeta);
+            if (result.error) {
+              await message.reply(result.error);
+              return;
+            }
+
+            await message.reply(`Trade \`${result.offer.id}\` rechazado.`);
+            return;
+          }
+
+          const result = await engine.cancelTradeOffer(tradeId, message.author.id, userMeta);
+          if (result.error) {
+            await message.reply(result.error);
+            return;
+          }
+
+          await message.reply(`Trade \`${result.offer.id}\` cancelado.`);
+          return;
+        }
+
+        await message.reply(
+          [
+            `Accion de trade no reconocida: \`${args[1] || ""}\`.`,
+            ...tradeUsageLines,
+          ].join("\n")
         );
         return;
       }

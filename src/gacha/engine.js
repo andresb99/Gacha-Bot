@@ -57,6 +57,12 @@ const CONTRACT_RARITY_CHAIN = ["common", "rare", "epic", "legendary", "mythic"];
 const CONTRACT_SOURCE_RARITIES = CONTRACT_RARITY_CHAIN.slice(0, -1);
 const MYTHIC_CATALOG_LIMIT = 250;
 const FEATURED_RARITIES = ["epic", "legendary", "mythic"];
+const TRADE_PENDING_STATUS = "pending";
+const TRADE_RESOLVED_STATUSES = new Set(["accepted", "rejected", "cancelled", "expired"]);
+const TRADE_VALID_STATUSES = new Set([TRADE_PENDING_STATUS, ...TRADE_RESOLVED_STATUSES]);
+const TRADE_DEFAULT_EXPIRY_MINUTES = 120;
+const TRADE_MAX_RESOLVED_HISTORY = 200;
+const TRADE_MAX_PENDING_PER_USER = 15;
 
 const DEFAULT_GACHA_STATE = {
   boardCharacters: [],
@@ -65,6 +71,7 @@ const DEFAULT_GACHA_STATE = {
   poolUpdatedAt: null,
   mythicCharacters: [],
   mythicCatalogUpdatedAt: null,
+  tradeOffers: [],
 };
 
 function shuffle(items) {
@@ -885,6 +892,270 @@ function applySelectedContractConsumption(inventory, sourceRarity, copiesToConsu
   };
 }
 
+function normalizeTradeStatus(rawStatus) {
+  const status = String(rawStatus || "")
+    .trim()
+    .toLowerCase();
+  return TRADE_VALID_STATUSES.has(status) ? status : TRADE_PENDING_STATUS;
+}
+
+function createTradeOfferId() {
+  const timestamp = Date.now().toString(36);
+  const randomSuffix = Math.random().toString(36).slice(2, 8);
+  return `tr_${timestamp}_${randomSuffix}`;
+}
+
+function normalizeTradeOffer(rawOffer) {
+  if (!rawOffer || typeof rawOffer !== "object") return null;
+
+  const id = String(rawOffer.id || "").trim();
+  const proposerId = String(rawOffer.proposerId || "").trim();
+  const targetId = String(rawOffer.targetId || "").trim();
+  const offeredCharacterId = String(rawOffer.offeredCharacterId || "").trim();
+  const requestedCharacterId = String(rawOffer.requestedCharacterId || "").trim();
+  if (!id || !proposerId || !targetId || !offeredCharacterId || !requestedCharacterId) {
+    return null;
+  }
+
+  const status = normalizeTradeStatus(rawOffer.status);
+  const createdAt = isValidDateString(rawOffer.createdAt)
+    ? new Date(rawOffer.createdAt).toISOString()
+    : "1970-01-01T00:00:00.000Z";
+  const expiresAt = isValidDateString(rawOffer.expiresAt)
+    ? new Date(rawOffer.expiresAt).toISOString()
+    : null;
+  const resolvedAt = isValidDateString(rawOffer.resolvedAt)
+    ? new Date(rawOffer.resolvedAt).toISOString()
+    : null;
+
+  const proposerUsername =
+    typeof rawOffer.proposerUsername === "string" && rawOffer.proposerUsername.trim()
+      ? rawOffer.proposerUsername.trim()
+      : null;
+  const proposerDisplayName =
+    typeof rawOffer.proposerDisplayName === "string" && rawOffer.proposerDisplayName.trim()
+      ? rawOffer.proposerDisplayName.trim()
+      : proposerUsername;
+  const targetUsername =
+    typeof rawOffer.targetUsername === "string" && rawOffer.targetUsername.trim()
+      ? rawOffer.targetUsername.trim()
+      : null;
+  const targetDisplayName =
+    typeof rawOffer.targetDisplayName === "string" && rawOffer.targetDisplayName.trim()
+      ? rawOffer.targetDisplayName.trim()
+      : targetUsername;
+
+  return {
+    id,
+    proposerId,
+    proposerUsername,
+    proposerDisplayName,
+    targetId,
+    targetUsername,
+    targetDisplayName,
+    offeredCharacterId,
+    requestedCharacterId,
+    offeredCharacter: mergeCharacterSnapshot(rawOffer.offeredCharacter, { id: offeredCharacterId }),
+    requestedCharacter: mergeCharacterSnapshot(rawOffer.requestedCharacter, { id: requestedCharacterId }),
+    status,
+    createdAt,
+    expiresAt,
+    resolvedAt,
+  };
+}
+
+function sortTradeOffers(rawOffers) {
+  return [...(rawOffers || [])].sort((a, b) => {
+    const createdAtA = Date.parse(a?.createdAt || 0) || 0;
+    const createdAtB = Date.parse(b?.createdAt || 0) || 0;
+    if (createdAtA !== createdAtB) return createdAtB - createdAtA;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+}
+
+function normalizeTradeOffers(rawOffers) {
+  return sortTradeOffers((rawOffers || []).map((offer) => normalizeTradeOffer(offer)).filter(Boolean));
+}
+
+function expirePendingTradeOffers(rawOffers, nowIso = new Date().toISOString()) {
+  const nowMs = Date.parse(nowIso);
+  let changed = false;
+  const offers = normalizeTradeOffers(rawOffers).map((offer) => ({ ...offer }));
+
+  const next = offers.map((offer) => {
+    if (offer.status !== TRADE_PENDING_STATUS) return offer;
+    if (!offer.expiresAt || Number.isNaN(Date.parse(offer.expiresAt))) return offer;
+    if (Date.parse(offer.expiresAt) > nowMs) return offer;
+
+    changed = true;
+    return {
+      ...offer,
+      status: "expired",
+      resolvedAt: nowIso,
+    };
+  });
+
+  return {
+    offers: sortTradeOffers(next),
+    changed,
+  };
+}
+
+function trimResolvedTradeOffers(rawOffers, maxResolved = TRADE_MAX_RESOLVED_HISTORY) {
+  const pending = [];
+  const resolved = [];
+  for (const offer of rawOffers || []) {
+    if (String(offer?.status || "") === TRADE_PENDING_STATUS) {
+      pending.push(offer);
+    } else {
+      resolved.push(offer);
+    }
+  }
+
+  const sortedResolved = [...resolved].sort((a, b) => {
+    const resolvedAtA = Date.parse(a?.resolvedAt || a?.createdAt || 0) || 0;
+    const resolvedAtB = Date.parse(b?.resolvedAt || b?.createdAt || 0) || 0;
+    if (resolvedAtA !== resolvedAtB) return resolvedAtB - resolvedAtA;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+  const trimmedResolved = sortedResolved.slice(0, Math.max(0, Number(maxResolved || 0)));
+  const changed = trimmedResolved.length !== resolved.length;
+
+  return {
+    offers: sortTradeOffers([...pending, ...trimmedResolved]),
+    changed,
+  };
+}
+
+function findInventoryEntryByQuery(entries, rawQuery) {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  if (!safeEntries.length) return null;
+
+  const query = String(rawQuery || "").trim();
+  if (!query) return null;
+  const queryLower = query.toLowerCase();
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) return null;
+
+  for (const entry of safeEntries) {
+    const id = String(entry?.character?.id || "")
+      .trim()
+      .toLowerCase();
+    if (id && id === queryLower) return entry;
+  }
+
+  const withAnimeMatch = normalizedQuery.match(/^(.+)\s+de\s+(.+)$/i);
+  const namePart = withAnimeMatch?.[1] ? normalizeText(withAnimeMatch[1]) : "";
+  const animePart = withAnimeMatch?.[2] ? normalizeText(withAnimeMatch[2]) : "";
+
+  let best = null;
+  for (const entry of safeEntries) {
+    const character = entry?.character || {};
+    const normalizedName = normalizeText(character?.name);
+    const normalizedAnime = normalizeText(character?.anime);
+    const normalizedId = normalizeText(character?.id);
+    const normalizedCombined = `${normalizedName} ${normalizedAnime}`.trim();
+    if (!normalizedName && !normalizedAnime && !normalizedId) continue;
+
+    let score = 0;
+    if (normalizedId && normalizedId === normalizedQuery) score += 2000;
+    if (normalizedName === normalizedQuery) score += 1200;
+    else if (normalizedName.startsWith(normalizedQuery)) score += 900;
+    else if (normalizedName.includes(normalizedQuery)) score += 700;
+
+    if (normalizedAnime === normalizedQuery) score += 450;
+    else if (normalizedAnime.includes(normalizedQuery)) score += 300;
+
+    if (normalizedCombined.includes(normalizedQuery)) score += 250;
+    if (namePart && animePart && normalizedName.includes(namePart) && normalizedAnime.includes(animePart)) {
+      score += 1500;
+    }
+
+    if (score <= 0) continue;
+
+    const rank = Number(character?.popularityRank || 0) || Number.MAX_SAFE_INTEGER;
+    const favorites = Number(character?.favorites || 0);
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && rank < best.rank) ||
+      (score === best.score && rank === best.rank && favorites > best.favorites)
+    ) {
+      best = {
+        entry,
+        score,
+        rank,
+        favorites,
+      };
+    }
+  }
+
+  return best?.entry || null;
+}
+
+function consumeInventoryCopies(inventory, characterId, copies = 1) {
+  const id = String(characterId || "").trim();
+  const needed = Math.max(1, Math.floor(Number(copies || 1)));
+  if (!id) {
+    return {
+      ok: false,
+      error: "ID de personaje invalido.",
+      character: null,
+      consumed: 0,
+      remaining: 0,
+    };
+  }
+
+  const currentEntry = inventory?.[id];
+  if (!currentEntry || typeof currentEntry !== "object") {
+    return {
+      ok: false,
+      error: `No hay copias disponibles de \`${id}\`.`,
+      character: null,
+      consumed: 0,
+      remaining: 0,
+    };
+  }
+
+  const currentCount = readInventoryCount(currentEntry);
+  if (currentCount < needed) {
+    return {
+      ok: false,
+      error: `\`${id}\` tiene ${currentCount} copia(s), faltan ${needed}.`,
+      character: cloneCharacterSnapshot(currentEntry.character),
+      consumed: 0,
+      remaining: currentCount,
+    };
+  }
+
+  const snapshot = cloneCharacterSnapshot(currentEntry.character) || { id };
+  const nextCount = currentCount - needed;
+  if (nextCount <= 0) {
+    delete inventory[id];
+  } else {
+    inventory[id] = {
+      count: nextCount,
+      character: snapshot,
+    };
+  }
+
+  return {
+    ok: true,
+    error: null,
+    character: snapshot,
+    consumed: needed,
+    remaining: Math.max(0, nextCount),
+  };
+}
+
+async function persistNormalizedInventoryContext(store, userId, context) {
+  if (!context || !context.user) return false;
+  if (!context.userChanged && !context.inventoryChanged) return false;
+  context.user.inventory = context.normalizedInventory;
+  await store.saveUser(userId, context.user);
+  return true;
+}
+
 function pickRandom(items) {
   const list = Array.isArray(items) ? items : [];
   if (!list.length) return null;
@@ -914,6 +1185,7 @@ function normalizeGachaState(rawState) {
     mythicCatalogUpdatedAt: isValidDateString(state.mythicCatalogUpdatedAt)
       ? state.mythicCatalogUpdatedAt
       : null,
+    tradeOffers: normalizeTradeOffers(state.tradeOffers),
   };
 }
 
@@ -1489,6 +1761,388 @@ class GachaEngine {
 
   getContractRules() {
     return buildContractRules(this.config);
+  }
+
+  getTradeOfferExpiryMs() {
+    return Math.max(1, TRADE_DEFAULT_EXPIRY_MINUTES) * 60 * 1000;
+  }
+
+  async syncTradeOffers(saveIfChanged = false) {
+    const rawOffers = Array.isArray(this.gachaState.tradeOffers) ? this.gachaState.tradeOffers : [];
+    const normalizedOffers = normalizeTradeOffers(rawOffers);
+    let changed = rawOffers.length !== normalizedOffers.length;
+
+    const { offers: withExpiredTrades, changed: expirationChanged } = expirePendingTradeOffers(
+      normalizedOffers
+    );
+    changed = changed || expirationChanged;
+
+    const { offers: trimmedOffers, changed: historyTrimmed } = trimResolvedTradeOffers(withExpiredTrades);
+    changed = changed || historyTrimmed;
+
+    this.gachaState.tradeOffers = trimmedOffers;
+    if (changed && saveIfChanged) {
+      await this.store.saveGachaState(this.gachaState);
+    }
+
+    return {
+      offers: trimmedOffers,
+      changed,
+    };
+  }
+
+  async listTradeOffersForUser(userId, userMeta = {}) {
+    const safeUserId = String(userId || "").trim();
+    if (!safeUserId) {
+      return {
+        incomingPending: [],
+        outgoingPending: [],
+        recentResolved: [],
+      };
+    }
+
+    const { user, changed: userChanged } = await this.syncUser(safeUserId, userMeta);
+    if (userChanged) {
+      await this.store.saveUser(safeUserId, user);
+    }
+
+    const { offers } = await this.syncTradeOffers(true);
+    const related = offers.filter(
+      (offer) => offer.proposerId === safeUserId || offer.targetId === safeUserId
+    );
+    return {
+      incomingPending: related.filter(
+        (offer) => offer.status === TRADE_PENDING_STATUS && offer.targetId === safeUserId
+      ),
+      outgoingPending: related.filter(
+        (offer) => offer.status === TRADE_PENDING_STATUS && offer.proposerId === safeUserId
+      ),
+      recentResolved: related
+        .filter((offer) => offer.status !== TRADE_PENDING_STATUS)
+        .sort((a, b) => {
+          const aTime = Date.parse(a?.resolvedAt || a?.createdAt || 0) || 0;
+          const bTime = Date.parse(b?.resolvedAt || b?.createdAt || 0) || 0;
+          return bTime - aTime;
+        })
+        .slice(0, 10),
+    };
+  }
+
+  async createTradeOffer(params = {}) {
+    const safeProposerId = String(params.proposerId || "").trim();
+    const safeTargetId = String(params.targetId || "").trim();
+    if (!safeProposerId || !safeTargetId) {
+      return { error: "Trade invalido: faltan usuarios." };
+    }
+    if (safeProposerId === safeTargetId) {
+      return { error: "No puedes crear un trade contigo mismo." };
+    }
+
+    const offeredQuery = String(params.offeredQuery || "").trim();
+    const requestedQuery = String(params.requestedQuery || "").trim();
+    if (!offeredQuery || !requestedQuery) {
+      return { error: "Debes indicar que ofreces y que pides para crear un trade." };
+    }
+
+    let { offers, changed: tradeStateChanged } = await this.syncTradeOffers(false);
+    const persistTradeStateIfNeeded = async () => {
+      if (!tradeStateChanged) return;
+      await this.store.saveGachaState(this.gachaState);
+      tradeStateChanged = false;
+    };
+
+    const pendingByProposer = offers.filter(
+      (offer) => offer.status === TRADE_PENDING_STATUS && offer.proposerId === safeProposerId
+    );
+    if (pendingByProposer.length >= TRADE_MAX_PENDING_PER_USER) {
+      await persistTradeStateIfNeeded();
+      return {
+        error: `Ya tienes ${TRADE_MAX_PENDING_PER_USER} trades pendientes. Cancela o espera respuesta.`,
+      };
+    }
+
+    const proposerContext = await this.getNormalizedInventoryContext(
+      safeProposerId,
+      params.proposerMeta || {}
+    );
+    const targetContext = await this.getNormalizedInventoryContext(safeTargetId, params.targetMeta || {});
+    await persistNormalizedInventoryContext(this.store, safeProposerId, proposerContext);
+    await persistNormalizedInventoryContext(this.store, safeTargetId, targetContext);
+
+    const offeredEntry = findInventoryEntryByQuery(proposerContext.entries, offeredQuery);
+    if (!offeredEntry || readInventoryCount(offeredEntry) <= 0) {
+      await persistTradeStateIfNeeded();
+      return {
+        error:
+          "No pude encontrar en tu inventario el personaje que quieres ofrecer. Usa un ID exacto o nombre.",
+      };
+    }
+
+    const requestedEntry = findInventoryEntryByQuery(targetContext.entries, requestedQuery);
+    if (!requestedEntry || readInventoryCount(requestedEntry) <= 0) {
+      await persistTradeStateIfNeeded();
+      return {
+        error:
+          "No pude encontrar en el inventario del usuario objetivo el personaje que estas pidiendo.",
+      };
+    }
+
+    const offeredCharacter = cloneCharacterSnapshot(offeredEntry.character);
+    const requestedCharacter = cloneCharacterSnapshot(requestedEntry.character);
+    if (!offeredCharacter?.id || !requestedCharacter?.id) {
+      await persistTradeStateIfNeeded();
+      return { error: "No se pudo construir el trade porque faltan datos de personaje." };
+    }
+
+    const duplicatedOffer = offers.find(
+      (offer) =>
+        offer.status === TRADE_PENDING_STATUS &&
+        offer.proposerId === safeProposerId &&
+        offer.targetId === safeTargetId &&
+        offer.offeredCharacterId === offeredCharacter.id &&
+        offer.requestedCharacterId === requestedCharacter.id
+    );
+    if (duplicatedOffer) {
+      await persistTradeStateIfNeeded();
+      return {
+        error: `Ya existe una oferta pendiente igual con ID \`${duplicatedOffer.id}\`.`,
+        offer: duplicatedOffer,
+      };
+    }
+
+    const proposerIdentity = normalizeUserMeta({
+      username: proposerContext.user?.username || params.proposerMeta?.username,
+      displayName: proposerContext.user?.displayName || params.proposerMeta?.displayName,
+    });
+    const targetIdentity = normalizeUserMeta({
+      username: targetContext.user?.username || params.targetMeta?.username,
+      displayName: targetContext.user?.displayName || params.targetMeta?.displayName,
+    });
+
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + this.getTradeOfferExpiryMs()).toISOString();
+    const offer = normalizeTradeOffer({
+      id: createTradeOfferId(),
+      proposerId: safeProposerId,
+      proposerUsername: proposerIdentity.username,
+      proposerDisplayName: proposerIdentity.displayName,
+      targetId: safeTargetId,
+      targetUsername: targetIdentity.username,
+      targetDisplayName: targetIdentity.displayName,
+      offeredCharacterId: offeredCharacter.id,
+      requestedCharacterId: requestedCharacter.id,
+      offeredCharacter,
+      requestedCharacter,
+      status: TRADE_PENDING_STATUS,
+      createdAt,
+      expiresAt,
+      resolvedAt: null,
+    });
+
+    offers = sortTradeOffers([...offers, offer]);
+    this.gachaState.tradeOffers = offers;
+    await this.store.saveGachaState(this.gachaState);
+    return { offer };
+  }
+
+  async acceptTradeOffer(tradeId, accepterUserId, accepterMeta = {}) {
+    const safeTradeId = String(tradeId || "").trim();
+    const safeAccepterId = String(accepterUserId || "").trim();
+    if (!safeTradeId) return { error: "Debes indicar el ID del trade." };
+    if (!safeAccepterId) return { error: "Usuario invalido para aceptar trade." };
+
+    let { offers, changed: tradeStateChanged } = await this.syncTradeOffers(false);
+    const persistTradeStateIfNeeded = async () => {
+      if (!tradeStateChanged) return;
+      await this.store.saveGachaState(this.gachaState);
+      tradeStateChanged = false;
+    };
+
+    const offer = offers.find((entry) => entry.id === safeTradeId);
+    if (!offer) {
+      await persistTradeStateIfNeeded();
+      return { error: `No existe un trade con ID \`${safeTradeId}\`.` };
+    }
+    if (offer.status !== TRADE_PENDING_STATUS) {
+      await persistTradeStateIfNeeded();
+      return { error: `El trade \`${safeTradeId}\` ya no esta pendiente (${offer.status}).` };
+    }
+    if (offer.targetId !== safeAccepterId) {
+      await persistTradeStateIfNeeded();
+      return { error: "Solo el usuario objetivo puede aceptar este trade." };
+    }
+
+    const proposerContext = await this.getNormalizedInventoryContext(offer.proposerId, {});
+    const accepterContext = await this.getNormalizedInventoryContext(offer.targetId, accepterMeta);
+
+    const proposerHolding = findInventoryEntryByQuery(proposerContext.entries, offer.offeredCharacterId);
+    const accepterHolding = findInventoryEntryByQuery(accepterContext.entries, offer.requestedCharacterId);
+    if (!proposerHolding || readInventoryCount(proposerHolding) <= 0) {
+      await persistNormalizedInventoryContext(this.store, offer.proposerId, proposerContext);
+      await persistNormalizedInventoryContext(this.store, offer.targetId, accepterContext);
+      await persistTradeStateIfNeeded();
+      return {
+        error: `El trade no puede completarse: <@${offer.proposerId}> ya no tiene \`${offer.offeredCharacterId}\`.`,
+      };
+    }
+    if (!accepterHolding || readInventoryCount(accepterHolding) <= 0) {
+      await persistNormalizedInventoryContext(this.store, offer.proposerId, proposerContext);
+      await persistNormalizedInventoryContext(this.store, offer.targetId, accepterContext);
+      await persistTradeStateIfNeeded();
+      return {
+        error: `El trade no puede completarse: ya no tienes \`${offer.requestedCharacterId}\`.`,
+      };
+    }
+
+    const proposerInventory = proposerContext.normalizedInventory;
+    const accepterInventory = accepterContext.normalizedInventory;
+    const proposerCharacterId = String(proposerHolding.character?.id || offer.offeredCharacterId);
+    const accepterCharacterId = String(accepterHolding.character?.id || offer.requestedCharacterId);
+
+    const removedFromProposer = consumeInventoryCopies(proposerInventory, proposerCharacterId, 1);
+    if (!removedFromProposer.ok) {
+      await persistNormalizedInventoryContext(this.store, offer.proposerId, proposerContext);
+      await persistNormalizedInventoryContext(this.store, offer.targetId, accepterContext);
+      await persistTradeStateIfNeeded();
+      return { error: removedFromProposer.error || "No se pudo consumir el personaje del oferente." };
+    }
+
+    const removedFromAccepter = consumeInventoryCopies(accepterInventory, accepterCharacterId, 1);
+    if (!removedFromAccepter.ok) {
+      await persistNormalizedInventoryContext(this.store, offer.proposerId, proposerContext);
+      await persistNormalizedInventoryContext(this.store, offer.targetId, accepterContext);
+      await persistTradeStateIfNeeded();
+      return { error: removedFromAccepter.error || "No se pudo consumir el personaje del receptor." };
+    }
+
+    const offeredCharacter = mergeCharacterSnapshot(removedFromProposer.character, offer.offeredCharacter);
+    const requestedCharacter = mergeCharacterSnapshot(removedFromAccepter.character, offer.requestedCharacter);
+    upsertInventoryEntry(proposerInventory, requestedCharacter);
+    upsertInventoryEntry(accepterInventory, offeredCharacter);
+
+    proposerContext.user.inventory = proposerInventory;
+    accepterContext.user.inventory = accepterInventory;
+    await this.store.saveUser(offer.proposerId, proposerContext.user);
+    await this.store.saveUser(offer.targetId, accepterContext.user);
+
+    const proposerIdentity = normalizeUserMeta({
+      username: proposerContext.user?.username,
+      displayName: proposerContext.user?.displayName,
+    });
+    const targetIdentity = normalizeUserMeta({
+      username: accepterContext.user?.username,
+      displayName: accepterContext.user?.displayName,
+    });
+    offer.proposerUsername = proposerIdentity.username;
+    offer.proposerDisplayName = proposerIdentity.displayName;
+    offer.targetUsername = targetIdentity.username;
+    offer.targetDisplayName = targetIdentity.displayName;
+    offer.offeredCharacterId = offeredCharacter.id || offer.offeredCharacterId;
+    offer.requestedCharacterId = requestedCharacter.id || offer.requestedCharacterId;
+    offer.offeredCharacter = offeredCharacter;
+    offer.requestedCharacter = requestedCharacter;
+    offer.status = "accepted";
+    offer.resolvedAt = new Date().toISOString();
+
+    this.gachaState.tradeOffers = sortTradeOffers(offers);
+    await this.store.saveGachaState(this.gachaState);
+    return {
+      offer,
+      offeredCharacter,
+      requestedCharacter,
+    };
+  }
+
+  async rejectTradeOffer(tradeId, actorUserId, actorMeta = {}) {
+    const safeTradeId = String(tradeId || "").trim();
+    const safeActorId = String(actorUserId || "").trim();
+    if (!safeTradeId) return { error: "Debes indicar el ID del trade." };
+    if (!safeActorId) return { error: "Usuario invalido para rechazar trade." };
+
+    const { user, changed: actorChanged } = await this.syncUser(safeActorId, actorMeta);
+    let { offers, changed: tradeStateChanged } = await this.syncTradeOffers(false);
+    const persistTradeStateIfNeeded = async () => {
+      if (!tradeStateChanged) return;
+      await this.store.saveGachaState(this.gachaState);
+      tradeStateChanged = false;
+    };
+
+    const offer = offers.find((entry) => entry.id === safeTradeId);
+    if (!offer) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: `No existe un trade con ID \`${safeTradeId}\`.` };
+    }
+    if (offer.status !== TRADE_PENDING_STATUS) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: `El trade \`${safeTradeId}\` ya no esta pendiente (${offer.status}).` };
+    }
+    if (offer.targetId !== safeActorId) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: "Solo el usuario objetivo puede rechazar este trade." };
+    }
+
+    const actorIdentity = normalizeUserMeta({
+      username: user?.username || actorMeta?.username,
+      displayName: user?.displayName || actorMeta?.displayName,
+    });
+    offer.targetUsername = actorIdentity.username;
+    offer.targetDisplayName = actorIdentity.displayName;
+    offer.status = "rejected";
+    offer.resolvedAt = new Date().toISOString();
+
+    if (actorChanged) await this.store.saveUser(safeActorId, user);
+    this.gachaState.tradeOffers = sortTradeOffers(offers);
+    await this.store.saveGachaState(this.gachaState);
+    return { offer };
+  }
+
+  async cancelTradeOffer(tradeId, actorUserId, actorMeta = {}) {
+    const safeTradeId = String(tradeId || "").trim();
+    const safeActorId = String(actorUserId || "").trim();
+    if (!safeTradeId) return { error: "Debes indicar el ID del trade." };
+    if (!safeActorId) return { error: "Usuario invalido para cancelar trade." };
+
+    const { user, changed: actorChanged } = await this.syncUser(safeActorId, actorMeta);
+    let { offers, changed: tradeStateChanged } = await this.syncTradeOffers(false);
+    const persistTradeStateIfNeeded = async () => {
+      if (!tradeStateChanged) return;
+      await this.store.saveGachaState(this.gachaState);
+      tradeStateChanged = false;
+    };
+
+    const offer = offers.find((entry) => entry.id === safeTradeId);
+    if (!offer) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: `No existe un trade con ID \`${safeTradeId}\`.` };
+    }
+    if (offer.status !== TRADE_PENDING_STATUS) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: `El trade \`${safeTradeId}\` ya no esta pendiente (${offer.status}).` };
+    }
+    if (offer.proposerId !== safeActorId) {
+      if (actorChanged) await this.store.saveUser(safeActorId, user);
+      await persistTradeStateIfNeeded();
+      return { error: "Solo quien creo la oferta puede cancelarla." };
+    }
+
+    const actorIdentity = normalizeUserMeta({
+      username: user?.username || actorMeta?.username,
+      displayName: user?.displayName || actorMeta?.displayName,
+    });
+    offer.proposerUsername = actorIdentity.username;
+    offer.proposerDisplayName = actorIdentity.displayName;
+    offer.status = "cancelled";
+    offer.resolvedAt = new Date().toISOString();
+
+    if (actorChanged) await this.store.saveUser(safeActorId, user);
+    this.gachaState.tradeOffers = sortTradeOffers(offers);
+    await this.store.saveGachaState(this.gachaState);
+    return { offer };
   }
 
   async getNormalizedInventoryContext(userId, userMeta = {}) {

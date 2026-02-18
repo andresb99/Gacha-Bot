@@ -78,6 +78,9 @@ npm start
 - `!gacha daily` (+5 tiradas cada 10 minutos por default)
 - `!gacha timer` (tiempo restante para el proximo refresh del board)
 - `!gacha contract [rareza] [cantidad] [--pick id[:copias],id[:copias],...]` (trade-up; para epic/legendary puedes elegir materiales)
+- `!gacha trade offer @user --give "<tu personaje o id>" --want "<personaje o id objetivo>"` (oferta de intercambio 1:1)
+- `!gacha trade list` (ver pendientes recibidos/enviados)
+- `!gacha trade accept <tradeId>` / `!gacha trade reject <tradeId>` / `!gacha trade cancel <tradeId>`
 - `!gacha profile`
 - `!gacha inventory [@user]` (carrusel, repetidos como `xN`)
 - `!gacha refreshboard` (solo `GACHA_ADMIN_USER_ID`)
