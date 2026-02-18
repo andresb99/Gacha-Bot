@@ -1,5 +1,6 @@
 const {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
@@ -105,15 +106,6 @@ function buildTradeOfferEmbed(offer, options = {}) {
       text: `Trade ID: ${safeOffer.id || "N/A"}`,
     });
 
-  const offeredImage = String(safeOffer?.offeredCharacter?.imageUrl || "").trim();
-  const requestedImage = String(safeOffer?.requestedCharacter?.imageUrl || "").trim();
-  if (offeredImage) {
-    embed.setThumbnail(offeredImage);
-  }
-  if (requestedImage) {
-    embed.setImage(requestedImage);
-  }
-
   return embed;
 }
 
@@ -138,6 +130,44 @@ function resolveTradeCardTimeoutMs(offer) {
   );
 }
 
+function safeImageExtensionFromUrl(url) {
+  const safeUrl = String(url || "").trim();
+  const pathname = safeUrl.split("?")[0].toLowerCase();
+  if (pathname.endsWith(".png")) return "png";
+  if (pathname.endsWith(".webp")) return "webp";
+  if (pathname.endsWith(".gif")) return "gif";
+  return "jpg";
+}
+
+async function downloadAttachmentFromUrl(url, fileBaseName) {
+  const safeUrl = String(url || "").trim();
+  if (!safeUrl || typeof fetch !== "function") return null;
+
+  try {
+    const response = await fetch(safeUrl);
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    if (!arrayBuffer || arrayBuffer.byteLength <= 0) return null;
+
+    const extension = safeImageExtensionFromUrl(safeUrl);
+    const filename = `${fileBaseName}.${extension}`;
+    return new AttachmentBuilder(Buffer.from(arrayBuffer), { name: filename });
+  } catch (error) {
+    return null;
+  }
+}
+
+async function buildTradeImageAttachments(offer) {
+  const offeredImageUrl = String(offer?.offeredCharacter?.imageUrl || "").trim();
+  const requestedImageUrl = String(offer?.requestedCharacter?.imageUrl || "").trim();
+  const [offeredAttachment, requestedAttachment] = await Promise.all([
+    downloadAttachmentFromUrl(offeredImageUrl, "trade_offer_left"),
+    downloadAttachmentFromUrl(requestedImageUrl, "trade_offer_right"),
+  ]);
+
+  return [offeredAttachment, requestedAttachment].filter(Boolean);
+}
+
 async function sendTradeOfferCard({ message, offer, engine, prefix }) {
   const sessionId = Date.now().toString(36);
   const idPrefix = "gtrade";
@@ -146,8 +176,10 @@ async function sendTradeOfferCard({ message, offer, engine, prefix }) {
   let currentOffer = offer;
   let resolved = false;
 
+  const tradeImageAttachments = await buildTradeImageAttachments(currentOffer);
   const response = await message.reply({
     embeds: [buildTradeOfferEmbed(currentOffer, { status: "pending" })],
+    files: tradeImageAttachments,
     components: [buildTradeActionRow(idPrefix, sessionId, false)],
   });
 
@@ -189,6 +221,17 @@ async function sendTradeOfferCard({ message, offer, engine, prefix }) {
         ],
         components: [buildTradeActionRow(idPrefix, sessionId, true)],
       });
+      try {
+        const offeredName = String(currentOffer?.offeredCharacter?.name || currentOffer?.offeredCharacterId || "N/A");
+        const requestedName = String(
+          currentOffer?.requestedCharacter?.name || currentOffer?.requestedCharacterId || "N/A"
+        );
+        await interaction.followUp({
+          content: `Trade completado \`${currentOffer.id}\`: <@${currentOffer.proposerId}> y <@${currentOffer.targetId}> intercambiaron **${offeredName}** por **${requestedName}**.`,
+        });
+      } catch (error) {
+        // Ignore follow-up failures to avoid breaking the trade flow.
+      }
       collector.stop("resolved");
       return;
     }
