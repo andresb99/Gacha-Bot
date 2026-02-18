@@ -37,6 +37,17 @@ class InMemoryStore {
     this.users.set(String(userId), clone(user));
     this.saveUserCalls += 1;
   }
+
+  async getAllUsers() {
+    const users = [];
+    for (const [userId, user] of this.users.entries()) {
+      users.push({
+        userId: String(userId),
+        user: clone(user),
+      });
+    }
+    return users;
+  }
 }
 
 module.exports = {

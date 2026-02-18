@@ -1828,6 +1828,124 @@ class GachaEngine {
     };
   }
 
+  async getTradeOfferById(tradeId) {
+    const safeTradeId = String(tradeId || "").trim();
+    if (!safeTradeId) return null;
+    const { offers } = await this.syncTradeOffers(true);
+    return offers.find((offer) => String(offer?.id || "") === safeTradeId) || null;
+  }
+
+  async findOwnersByCharacter(query, options = {}) {
+    const input = String(query || "").trim();
+    if (!input) {
+      return {
+        error: "Debes indicar un personaje o ID.",
+        query: input,
+        character: null,
+        owners: [],
+        totalOwners: 0,
+      };
+    }
+
+    if (typeof this.store.getAllUsers !== "function") {
+      return {
+        error: "El almacenamiento actual no soporta busqueda global de inventarios.",
+        query: input,
+        character: null,
+        owners: [],
+        totalOwners: 0,
+      };
+    }
+
+    const users = await this.store.getAllUsers();
+    const boardById = buildCharacterByIdMap(this.getBoardCharacters());
+    const byId = new Map([...boardById, ...this.characterById]);
+    const inventoryCharacterById = new Map();
+    const inventoryByUser = [];
+
+    for (const record of users || []) {
+      const userId = String(record?.userId || "").trim();
+      if (!userId) continue;
+      const user = record?.user && typeof record.user === "object" ? record.user : {};
+      const inventory =
+        user?.inventory && typeof user.inventory === "object" && !Array.isArray(user.inventory)
+          ? user.inventory
+          : {};
+      const { entries } = buildInventoryEntries(inventory, byId);
+      inventoryByUser.push({
+        userId,
+        user,
+        entries,
+      });
+
+      for (const entry of entries) {
+        const snapshot = cloneCharacterSnapshot(entry?.character);
+        if (!snapshot?.id) continue;
+        const previous = inventoryCharacterById.get(snapshot.id);
+        inventoryCharacterById.set(
+          snapshot.id,
+          previous ? mergeCharacterSnapshot(snapshot, previous) : snapshot
+        );
+      }
+    }
+
+    const inventoryCharacters = [...inventoryCharacterById.values()];
+    let targetCharacter = null;
+    for (const character of inventoryCharacters) {
+      if (String(character?.id || "").toLowerCase() === input.toLowerCase()) {
+        targetCharacter = character;
+        break;
+      }
+    }
+    if (!targetCharacter) {
+      targetCharacter = findBestCharacterMatch(input, inventoryCharacters);
+    }
+
+    if (!targetCharacter?.id) {
+      return {
+        error: null,
+        query: input,
+        character: null,
+        owners: [],
+        totalOwners: 0,
+      };
+    }
+
+    const targetCharacterId = String(targetCharacter.id);
+    const owners = [];
+    for (const entry of inventoryByUser) {
+      const matching = entry.entries.find(
+        (item) => String(item?.character?.id || "") === targetCharacterId
+      );
+      if (!matching) continue;
+      const count = Math.max(0, Math.floor(Number(matching.count || 0)));
+      if (count <= 0) continue;
+
+      const displayName =
+        entry.user?.displayName || entry.user?.username || `Usuario ${entry.userId}`;
+      owners.push({
+        userId: entry.userId,
+        username: entry.user?.username || null,
+        displayName,
+        count,
+      });
+    }
+
+    owners.sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return String(a.displayName || "").localeCompare(String(b.displayName || ""));
+    });
+
+    const limit = Math.max(1, Math.min(100, Number(options.limit || 25)));
+    return {
+      error: null,
+      query: input,
+      character: cloneCharacterSnapshot(targetCharacter),
+      owners: owners.slice(0, limit),
+      totalOwners: owners.length,
+    };
+  }
+
   async createTradeOffer(params = {}) {
     const safeProposerId = String(params.proposerId || "").trim();
     const safeTargetId = String(params.targetId || "").trim();

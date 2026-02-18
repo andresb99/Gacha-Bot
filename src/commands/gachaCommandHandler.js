@@ -9,6 +9,7 @@ const { sendCharacterCarousel } = require("../presentation/characterCarousel");
 const { sendInventoryCarousel } = require("../presentation/inventoryCarousel");
 const { sendMythicsPagination } = require("../presentation/mythicsPagination");
 const { sendRollResultsPagination } = require("../presentation/rollResultsPagination");
+const { sendTradeOfferCard } = require("../presentation/tradeOfferCard");
 const { formatDuration } = require("../utils/time");
 
 const MAX_ROLLS_PER_COMMAND = 50;
@@ -58,6 +59,9 @@ function normalizeSubcommand(rawSubcommand) {
   if (["daily", "claim", "reward"].includes(value)) return "daily";
   if (["timer", "timeleft", "refreshin", "boardtimer", "nextboard"].includes(value)) {
     return "boardtimer";
+  }
+  if (["owners", "owner", "whohas", "holders", "quientiene", "tiene"].includes(value)) {
+    return "owners";
   }
   if (["profile", "stats"].includes(value)) return "profile";
   if (["inv", "inventory", "collection"].includes(value)) return "inventory";
@@ -121,8 +125,7 @@ function parseTradeOfferDetails(rawInput) {
       valid: false,
       giveQuery: null,
       wantQuery: null,
-      error:
-        "Debes indicar que ofreces y que pides. Ejemplo: `--give \"Shigeo Kageyama\" --want \"Light Yagami\"`.",
+      error: "Debes indicar que ofreces y que pides. Ejemplo: `Shigeo Kageyama por Light Yagami`.",
     };
   }
 
@@ -191,8 +194,7 @@ function parseTradeOfferDetails(rawInput) {
     valid: false,
     giveQuery: null,
     wantQuery: null,
-    error:
-      "No pude interpretar la oferta. Usa `--give <tu personaje>` y `--want <personaje objetivo>`.",
+    error: "No pude interpretar la oferta. Usa el formato `<lo que ofreces> por <lo que pides>`.",
   };
 }
 
@@ -502,6 +504,43 @@ function createGachaMessageHandler({ engine, config }) {
         return;
       }
 
+      if (subcommand === "owners") {
+        const query = args.slice(1).join(" ").trim();
+        if (!query) {
+          await message.reply(
+            `Uso: \`${config.prefix}gacha owners <personaje o id>\`. Ejemplo: \`${config.prefix}gacha owners light yagami\`.`
+          );
+          return;
+        }
+
+        const result = await engine.findOwnersByCharacter(query, { limit: 25 });
+        if (result.error) {
+          await message.reply(result.error);
+          return;
+        }
+
+        if (!result.character || !result.owners.length) {
+          await message.reply(`No encontre usuarios con ese personaje en inventario: \`${query}\`.`);
+          return;
+        }
+
+        const characterLabel = formatTradeCharacterLabel(result.character, result.character.id);
+        const ownersLines = result.owners.map(
+          (entry, index) =>
+            `\`${String(index + 1).padStart(2, "0")}\` <@${entry.userId}> - x${entry.count} (${entry.displayName})`
+        );
+
+        await message.reply(
+          [
+            `**Jugadores con ${characterLabel}**`,
+            `ID: \`${result.character.id}\` | Total de usuarios: ${result.totalOwners}`,
+            "",
+            ...ownersLines,
+          ].join("\n")
+        );
+        return;
+      }
+
       if (subcommand === "profile") {
         const profile = await engine.getProfile(message.author.id, buildUserMeta(message));
         await message.reply({ embeds: [buildProfileEmbed(profile, message.author.username)] });
@@ -667,10 +706,12 @@ function createGachaMessageHandler({ engine, config }) {
       }
 
       if (subcommand === "trade") {
-        const tradeAction = normalizeTradeAction(args[1]);
+        const rawTradeToken = String(args[1] || "").trim();
+        const directTradeTargetId = extractMentionedUserId(rawTradeToken);
+        const tradeAction = directTradeTargetId ? "offer" : normalizeTradeAction(rawTradeToken);
         const tradeUsageLines = [
-          `Uso: \`${config.prefix}gacha trade offer @usuario --give "<tu personaje o id>" --want "<personaje o id que pides>"\``,
-          `Tambien puedes usar: \`${config.prefix}gacha trade offer @usuario <lo_tuyo> por <lo_que_pides>\``,
+          `Uso rapido: \`${config.prefix}gacha trade @usuario <lo_tuyo> por <lo_que_pides>\``,
+          `Tambien: \`${config.prefix}gacha trade offer @usuario <lo_tuyo> por <lo_que_pides>\``,
           `Gestion: \`${config.prefix}gacha trade list\`, \`${config.prefix}gacha trade accept <tradeId>\`, \`${config.prefix}gacha trade reject <tradeId>\`, \`${config.prefix}gacha trade cancel <tradeId>\``,
         ];
         const userMeta = buildUserMeta(message);
@@ -709,8 +750,9 @@ function createGachaMessageHandler({ engine, config }) {
         }
 
         if (tradeAction === "offer") {
-          const targetUser = message.mentions.users.first();
-          if (!targetUser) {
+          const targetToken = directTradeTargetId ? rawTradeToken : String(args[2] || "").trim();
+          const targetUserId = extractMentionedUserId(targetToken);
+          if (!targetUserId) {
             await message.reply(
               [
                 "Debes mencionar al usuario objetivo.",
@@ -721,14 +763,20 @@ function createGachaMessageHandler({ engine, config }) {
             return;
           }
 
+          const targetUser =
+            message.mentions.users.get(targetUserId) ||
+            (await message.client.users.fetch(targetUserId).catch(() => null));
+          if (!targetUser) {
+            await message.reply("No pude encontrar al usuario objetivo.");
+            return;
+          }
+
           if (targetUser.bot) {
             await message.reply("No puedes crear trades con bots.");
             return;
           }
 
-          const detailTokens = args
-            .slice(2)
-            .filter((token) => !/^<@!?\d+>$/.test(String(token || "").trim()));
+          const detailTokens = directTradeTargetId ? args.slice(2) : args.slice(3);
           const parsedTradeOffer = parseTradeOfferDetails(detailTokens.join(" "));
           if (!parsedTradeOffer.valid) {
             await message.reply(
@@ -742,7 +790,8 @@ function createGachaMessageHandler({ engine, config }) {
           }
 
           const targetMember =
-            message.mentions.members.first() ||
+            message.mentions.members.get(targetUserId) ||
+            message.guild?.members?.cache?.get(targetUserId) ||
             (targetUser.id === message.author.id ? message.member : null);
           const targetMeta = buildUserMeta(message, targetUser, targetMember);
           const offerResult = await engine.createTradeOffer({
@@ -760,22 +809,12 @@ function createGachaMessageHandler({ engine, config }) {
           }
 
           const offer = offerResult.offer;
-          await message.reply(
-            [
-              `Trade creado: \`${offer.id}\`.`,
-              `Ofreces **${formatTradeCharacterLabel(
-                offer.offeredCharacter,
-                offer.offeredCharacterId
-              )}** a <@${offer.targetId}> por **${formatTradeCharacterLabel(
-                offer.requestedCharacter,
-                offer.requestedCharacterId
-              )}**.`,
-              `La otra persona puede aceptar con: \`${config.prefix}gacha trade accept ${offer.id}\`.`,
-              offer.expiresAt ? `Expira en: ${formatTradeExpiry(offer.expiresAt).replace(/^ \| /, "")}.` : null,
-            ]
-              .filter(Boolean)
-              .join("\n")
-          );
+          await sendTradeOfferCard({
+            message,
+            offer,
+            engine,
+            prefix: config.prefix,
+          });
           return;
         }
 
@@ -854,7 +893,7 @@ function createGachaMessageHandler({ engine, config }) {
 
         await message.reply(
           [
-            `Accion de trade no reconocida: \`${args[1] || ""}\`.`,
+            `Accion de trade no reconocida: \`${rawTradeToken || ""}\`.`,
             ...tradeUsageLines,
           ].join("\n")
         );

@@ -5,7 +5,7 @@ const {
   ComponentType,
 } = require("discord.js");
 
-const DEFAULT_CAROUSEL_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_CAROUSEL_TIMEOUT_MS = 3 * 60 * 1000;
 
 function buildCarouselRow(prefix, sessionId, options = {}) {
   const disabled = Boolean(options?.disabled);
@@ -52,7 +52,7 @@ async function sendImageCarousel({
   buildListEmbed,
   buildEmptyEmbed,
   onSlideChange,
-  timeoutMs = DEFAULT_CAROUSEL_IDLE_TIMEOUT_MS,
+  timeoutMs = DEFAULT_CAROUSEL_TIMEOUT_MS,
   disableOnEnd = true,
 }) {
   const sendFn =
@@ -87,10 +87,8 @@ async function sendImageCarousel({
   const collectorOptions = {
     componentType: ComponentType.Button,
   };
-  const normalizedTimeoutMs = Number(timeoutMs);
-  if (Number.isFinite(normalizedTimeoutMs) && normalizedTimeoutMs > 0) {
-    // Use inactivity timeout instead of absolute timeout so active users can keep navigating.
-    collectorOptions.idle = normalizedTimeoutMs;
+  if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+    collectorOptions.time = Number(timeoutMs);
   }
 
   const collector = response.createMessageComponentCollector(collectorOptions);

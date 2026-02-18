@@ -422,3 +422,76 @@ test("listTradeOffersForUser separa pendientes y resueltos", async () => {
   assert.equal(bobAfter.recentResolved[0].id, created.offer.id);
   assert.equal(bobAfter.recentResolved[0].status, "rejected");
 });
+
+test("findOwnersByCharacter devuelve usuarios y cantidades", async () => {
+  const shigeo = createCharacter("mob_shigeo", "mythic", 0.5, {
+    name: "Shigeo Kageyama",
+    anime: "Mob Psycho 100",
+  });
+  const other = createCharacter("op_luffy", "legendary", 2.5, {
+    name: "Monkey D. Luffy",
+    anime: "One Piece",
+  });
+
+  const store = new InMemoryStore({
+    gachaState: createBoardState([shigeo, other]),
+    users: {
+      u1: {
+        username: "alice",
+        displayName: "Alice",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 12,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [shigeo.id]: createInventoryEntry(shigeo, 3),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+      u2: {
+        username: "bob",
+        displayName: "Bob",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 7,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [shigeo.id]: createInventoryEntry(shigeo, 1),
+          [other.id]: createInventoryEntry(other, 2),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+      u3: {
+        username: "carol",
+        displayName: "Carol",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 4,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [other.id]: createInventoryEntry(other, 5),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+
+  const engine = new GachaEngine(store, createConfig());
+  engine.gachaState = createBoardState([shigeo, other]);
+
+  const result = await engine.findOwnersByCharacter("Shigeo Kageyama", { limit: 10 });
+  assert.equal(result.error, null);
+  assert.equal(result.character?.id, shigeo.id);
+  assert.equal(result.totalOwners, 2);
+  assert.equal(result.owners.length, 2);
+  assert.equal(result.owners[0].userId, "u1");
+  assert.equal(result.owners[0].count, 3);
+  assert.equal(result.owners[1].userId, "u2");
+  assert.equal(result.owners[1].count, 1);
+});

@@ -264,6 +264,23 @@ class FirestoreStore {
     await this.usersCollectionRef.doc(key).set(normalized, { merge: false });
   }
 
+  async getAllUsers() {
+    const snapshot = await this.usersCollectionRef.get();
+    const users = [];
+
+    snapshot.forEach((doc) => {
+      const userId = String(doc.id);
+      const normalized = normalizeUser(doc.data());
+      this.userCache.set(userId, clone(normalized));
+      users.push({
+        userId,
+        user: clone(normalized),
+      });
+    });
+
+    return users;
+  }
+
   async getInventoryCharacterSnapshots() {
     const snapshot = await this.usersCollectionRef.get();
     const byId = new Map();

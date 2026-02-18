@@ -23,6 +23,7 @@ Bot de gachapon estilo anime para Discord con:
 - `src/presentation/boardListPagination.js`: paginacion por paginas para `list`.
 - `src/presentation/characterCarousel.js`: galeria de imagenes para `character`.
 - `src/presentation/inventoryCarousel.js`: carrusel del inventario.
+- `src/presentation/tradeOfferCard.js`: tarjeta de trade con botones aceptar/rechazar.
 - `src/commands/gachaCommandHandler.js`: parser y ejecucion de comandos.
 - `src/bot/client.js`: factory del cliente Discord.
 - `src/bot/scheduler.js`: jobs de mantenimiento.
@@ -77,8 +78,9 @@ npm start
 - `!gacha roll [cantidad]`
 - `!gacha daily` (+5 tiradas cada 10 minutos por default)
 - `!gacha timer` (tiempo restante para el proximo refresh del board)
+- `!gacha owners <personaje|id>` (lista usuarios que tienen ese personaje y cantidad)
 - `!gacha contract [rareza] [cantidad] [--pick id[:copias],id[:copias],...]` (trade-up; para epic/legendary puedes elegir materiales)
-- `!gacha trade offer @user --give "<tu personaje o id>" --want "<personaje o id objetivo>"` (oferta de intercambio 1:1)
+- `!gacha trade @user <lo_tuyo> por <lo_que_pides>` (oferta de intercambio 1:1 con tarjeta y botones)
 - `!gacha trade list` (ver pendientes recibidos/enviados)
 - `!gacha trade accept <tradeId>` / `!gacha trade reject <tradeId>` / `!gacha trade cancel <tradeId>`
 - `!gacha profile`
