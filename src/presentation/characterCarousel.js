@@ -2,6 +2,7 @@ const { buildCharacterInfoEmbed, buildCharacterImageEmbed } = require("./embeds"
 const { sendImageCarousel } = require("./imageCarousel");
 
 const NEXT_IMAGE_PREFETCH_TIMEOUT_MS = 8 * 1000;
+const CHARACTER_LIST_PAGE_SIZE = 5;
 
 function createNextImagePrefetcher(gallery) {
   if (!Array.isArray(gallery) || gallery.length < 2 || typeof fetch !== "function") {
@@ -49,9 +50,10 @@ async function sendCharacterCarousel(message, character, images) {
     idPrefix: "gchar",
     totalItems: gallery.length,
     buildSlideEmbed: (index) => buildCharacterImageEmbed(character, gallery, index),
-    buildListEmbed: () => buildCharacterInfoEmbed(character, gallery),
+    buildListEmbed: (pagination) => buildCharacterInfoEmbed(character, gallery, pagination),
     buildEmptyEmbed: () => buildCharacterInfoEmbed(character, []),
     onSlideChange: prefetchNextImage,
+    listPageSize: CHARACTER_LIST_PAGE_SIZE,
   });
 }
 

@@ -1,6 +1,8 @@
 const { buildBoardEmbed, buildBoardCarouselEmbed } = require("./embeds");
 const { sendImageCarousel } = require("./imageCarousel");
 
+const BOARD_LIST_PAGE_SIZE = 10;
+
 async function sendBoardCarousel(message, board, boardDate, options = {}) {
   const sendFn =
     message && typeof message.reply === "function"
@@ -24,8 +26,9 @@ async function sendBoardCarousel(message, board, boardDate, options = {}) {
     idPrefix: "gbrd",
     totalItems: Array.isArray(board) ? board.length : 0,
     buildSlideEmbed: (index) => buildBoardCarouselEmbed(board, boardDate, index),
-    buildListEmbed: () => buildBoardEmbed(board || [], boardDate),
+    buildListEmbed: (pagination) => buildBoardEmbed(board || [], boardDate, pagination),
     buildEmptyEmbed: () => buildBoardEmbed([], boardDate),
+    listPageSize: BOARD_LIST_PAGE_SIZE,
     timeoutMs: options?.timeoutMs,
     disableOnEnd: options?.disableOnEnd,
   });

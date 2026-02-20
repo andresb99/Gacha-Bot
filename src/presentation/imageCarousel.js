@@ -10,19 +10,18 @@ const DEFAULT_CAROUSEL_TIMEOUT_MS = 3 * 60 * 1000;
 function buildCarouselRow(prefix, sessionId, options = {}) {
   const disabled = Boolean(options?.disabled);
   const showingList = Boolean(options?.showingList);
-  const navigationDisabled = disabled || showingList;
   const toggleLabel = showingList ? "Carrusel" : "Lista";
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:prev`)
       .setLabel("Anterior")
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(navigationDisabled),
+      .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:next`)
       .setLabel("Siguiente")
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(navigationDisabled),
+      .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:list`)
       .setLabel(toggleLabel)
@@ -53,6 +52,7 @@ async function sendImageCarousel({
   buildListEmbed,
   buildEmptyEmbed,
   onSlideChange,
+  listPageSize = 10,
   timeoutMs = DEFAULT_CAROUSEL_TIMEOUT_MS,
   disableOnEnd = true,
 }) {
@@ -76,9 +76,35 @@ async function sendImageCarousel({
     return;
   }
 
+  const safeListPageSize = Math.max(1, Math.floor(Number(listPageSize || 10)));
+  const totalListPages = Math.max(1, Math.ceil(totalItems / safeListPageSize));
   const sessionId = Date.now().toString(36);
   let currentIndex = 0;
+  let listPage = 0;
   let showingList = false;
+
+  function syncListPageFromCurrentIndex() {
+    listPage = Math.max(0, Math.min(totalListPages - 1, Math.floor(currentIndex / safeListPageSize)));
+  }
+
+  function syncCurrentIndexFromListPage() {
+    currentIndex = Math.max(0, Math.min(totalItems - 1, listPage * safeListPageSize));
+  }
+
+  function buildListViewEmbed() {
+    const start = listPage * safeListPageSize;
+    const end = Math.min(totalItems, start + safeListPageSize);
+    return buildListEmbed({
+      page: listPage,
+      pageSize: safeListPageSize,
+      totalPages: totalListPages,
+      totalItems,
+      start,
+      end,
+      currentIndex,
+    });
+  }
+
   const response = await sendFn({
     embeds: [buildSlideEmbed(currentIndex)],
     components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
@@ -108,36 +134,52 @@ async function sendImageCarousel({
     const listId = `${idPrefix}:${sessionId}:list`;
 
     if (interaction.customId === prevId) {
-      currentIndex = (currentIndex - 1 + totalItems) % totalItems;
-      if (!showingList) {
+      if (showingList) {
+        listPage = (listPage - 1 + totalListPages) % totalListPages;
+        syncCurrentIndexFromListPage();
+        await interaction.update({
+          embeds: [buildListViewEmbed()],
+          components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
+        });
+      } else {
+        currentIndex = (currentIndex - 1 + totalItems) % totalItems;
         runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+        await interaction.update({
+          embeds: [buildSlideEmbed(currentIndex)],
+          components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
+        });
       }
-      await interaction.update({
-        embeds: [showingList ? buildListEmbed() : buildSlideEmbed(currentIndex)],
-        components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
-      });
       return;
     }
 
     if (interaction.customId === nextId) {
-      currentIndex = (currentIndex + 1) % totalItems;
-      if (!showingList) {
+      if (showingList) {
+        listPage = (listPage + 1) % totalListPages;
+        syncCurrentIndexFromListPage();
+        await interaction.update({
+          embeds: [buildListViewEmbed()],
+          components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
+        });
+      } else {
+        currentIndex = (currentIndex + 1) % totalItems;
         runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+        await interaction.update({
+          embeds: [buildSlideEmbed(currentIndex)],
+          components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
+        });
       }
-      await interaction.update({
-        embeds: [showingList ? buildListEmbed() : buildSlideEmbed(currentIndex)],
-        components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
-      });
       return;
     }
 
     if (interaction.customId === listId) {
       showingList = !showingList;
-      if (!showingList) {
+      if (showingList) {
+        syncListPageFromCurrentIndex();
+      } else {
         runSlideChangeHook(onSlideChange, currentIndex, totalItems);
       }
       await interaction.update({
-        embeds: [showingList ? buildListEmbed() : buildSlideEmbed(currentIndex)],
+        embeds: [showingList ? buildListViewEmbed() : buildSlideEmbed(currentIndex)],
         components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
       });
     }
@@ -149,13 +191,14 @@ async function sendImageCarousel({
       const endedByTimeout = reason === "time" || reason === "idle";
       if (endedByTimeout) {
         showingList = true;
+        syncListPageFromCurrentIndex();
       }
 
       const payload = {
         components: [buildCarouselRow(idPrefix, sessionId, { disabled: true, showingList })],
       };
       if (endedByTimeout) {
-        payload.embeds = [buildListEmbed()];
+        payload.embeds = [buildListViewEmbed()];
       }
 
       await response.edit({

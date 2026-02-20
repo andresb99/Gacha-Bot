@@ -4,6 +4,8 @@ const {
 } = require("./embeds");
 const { sendImageCarousel } = require("./imageCarousel");
 
+const INVENTORY_LIST_PAGE_SIZE = 10;
+
 async function sendInventoryCarousel(message, entries, ownerLabel) {
   await sendImageCarousel({
     message,
@@ -11,8 +13,9 @@ async function sendInventoryCarousel(message, entries, ownerLabel) {
     idPrefix: "ginv",
     totalItems: Array.isArray(entries) ? entries.length : 0,
     buildSlideEmbed: (index) => buildInventoryCarouselEmbed(entries, ownerLabel, index),
-    buildListEmbed: () => buildInventoryEmbed(entries || [], ownerLabel),
+    buildListEmbed: (pagination) => buildInventoryEmbed(entries || [], ownerLabel, pagination),
     buildEmptyEmbed: () => buildInventoryEmbed([], ownerLabel),
+    listPageSize: INVENTORY_LIST_PAGE_SIZE,
   });
 }
 

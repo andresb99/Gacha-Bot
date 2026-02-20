@@ -40,6 +40,31 @@ function rankingText(character) {
   return rank > 0 ? `#${rank}` : "N/A";
 }
 
+function resolvePagination(totalItems, options = {}, defaultPageSize = 10) {
+  const safeTotalItems = Math.max(0, Math.floor(Number(totalItems || 0)));
+  const parsedPageSize = Number(options?.pageSize);
+  const safePageSize = Math.max(
+    1,
+    Math.floor(Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? parsedPageSize : defaultPageSize)
+  );
+  const totalPages = Math.max(1, Math.ceil(safeTotalItems / safePageSize));
+  const parsedPage = Number(options?.page);
+  const safePage = Math.max(
+    0,
+    Math.min(totalPages - 1, Math.floor(Number.isFinite(parsedPage) ? parsedPage : 0))
+  );
+  const start = Math.max(0, Math.min(safeTotalItems, safePage * safePageSize));
+  const end = Math.max(start, Math.min(safeTotalItems, start + safePageSize));
+
+  return {
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages,
+    start,
+    end,
+  };
+}
+
 function buildHelpEmbed(prefix) {
   return new EmbedBuilder()
     .setTitle("Gacha Anime - Comandos")
@@ -66,22 +91,35 @@ function buildHelpEmbed(prefix) {
     .setFooter({ text: "Pity mitica con soft/hard configurable | Usa !gacha profile para ver progreso" });
 }
 
-function buildBoardEmbed(board, boardDate) {
-  const chanceById = buildChanceMap(board);
-  const lines = board.map(
-    (character, index) => {
-      const chance = formatChance(chanceById.get(String(character.id)));
-      return `\`${String(index + 1).padStart(2, "0")}\` ${rarityText(character.rarity)} **${
-        character.name
-      }** - ${character.anime} (${chance})`;
-    }
+function buildBoardEmbed(board, boardDate, options = {}) {
+  const safeBoard = Array.isArray(board) ? board : [];
+  const chanceById = buildChanceMap(safeBoard);
+  const pagination = resolvePagination(
+    safeBoard.length,
+    options,
+    Math.max(1, safeBoard.length || Number(options?.pageSize) || 10)
   );
+  const pageEntries = safeBoard.slice(pagination.start, pagination.end);
+  const lines = pageEntries.map((character, index) => {
+    const chance = formatChance(chanceById.get(String(character.id)));
+    const absoluteIndex = pagination.start + index + 1;
+    return `\`${String(absoluteIndex).padStart(2, "0")}\` ${rarityText(character.rarity)} **${
+      character.name
+    }** - ${character.anime} (${chance})`;
+  });
+
+  const footerParts = [];
+  if (pagination.totalPages > 1) {
+    footerParts.push(`Pagina ${pagination.page + 1}/${pagination.totalPages}`);
+  }
+  footerParts.push(`Total: ${safeBoard.length}`);
+  footerParts.push("Usa !gacha roll para tirar");
 
   return new EmbedBuilder()
     .setTitle(`Tablero (${boardDate || "sin actualizar"})`)
     .setColor(0x5865f2)
     .setDescription(lines.join("\n") || "No hay personajes en el tablero.")
-    .setFooter({ text: "Usa !gacha roll para tirar" });
+    .setFooter({ text: footerParts.join(" | ") });
 }
 
 function buildBoardListPageEmbed(board, boardDate, page = 0, pageSize = 10, prefix = "!") {
@@ -211,14 +249,19 @@ function normalizeGroupedRollResults(results) {
     .filter((entry) => entry?.character);
 }
 
-function buildRollResultsListEmbed(results, summary = {}) {
+function buildRollResultsListEmbed(results, summary = {}, options = {}) {
   const grouped = normalizeGroupedRollResults(results);
+  const useExplicitPagination =
+    Number.isFinite(Number(options?.pageSize)) || Number.isFinite(Number(options?.page));
+  const pagination = resolvePagination(grouped.length, options, useExplicitPagination ? 12 : 60);
   const totalRolls = grouped.reduce((sum, entry) => sum + Math.max(0, Number(entry?.count || 0)), 0);
   const summaryLine = buildRollSummaryLine(summary);
-  const lines = grouped.map((group, index) => {
+  const pageEntries = grouped.slice(pagination.start, pagination.end);
+  const lines = pageEntries.map((group, index) => {
     const character = group.character || {};
     const pityTag = group.pityCount > 0 ? ` | Pity x${group.pityCount}` : "";
-    return `\`${String(index + 1).padStart(2, "0")}\` ${rarityText(character?.rarity)} **${
+    const absoluteIndex = pagination.start + index + 1;
+    return `\`${String(absoluteIndex).padStart(2, "0")}\` ${rarityText(character?.rarity)} **${
       character?.name || "Desconocido"
     }** x${group.count} - ${character?.anime || "Anime desconocido"} | Rank ${rankingText(
       character
@@ -239,12 +282,19 @@ function buildRollResultsListEmbed(results, summary = {}) {
     if (withMore.length <= 4000) description = withMore;
   }
 
+  const footerParts = [];
+  if (pagination.totalPages > 1) {
+    footerParts.push(`Pagina ${pagination.page + 1}/${pagination.totalPages}`);
+  }
+  footerParts.push("Lista agrupada por personaje (xN)");
+  footerParts.push("Usa Lista/Carrusel para alternar");
+
   return new EmbedBuilder()
     .setTitle("Resultados de Tiradas")
     .setColor(0x5865f2)
     .setDescription(description || `${summaryLine}\n\nSin resultados.`)
     .setFooter({
-      text: "Lista agrupada por personaje (xN) | Usa Lista/Carrusel para alternar",
+      text: footerParts.join(" | "),
     });
 }
 
@@ -394,22 +444,38 @@ function buildProfileEmbed(profile, user) {
     );
 }
 
-function buildInventoryEmbed(entries, user) {
-  const topEntries = entries.slice(0, 20);
-  const lines = topEntries.map((entry) => {
+function buildInventoryEmbed(entries, user, options = {}) {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  const pagination = resolvePagination(
+    safeEntries.length,
+    options,
+    Math.max(1, Math.min(20, safeEntries.length || Number(options?.pageSize) || 10))
+  );
+  const pageEntries = safeEntries.slice(pagination.start, pagination.end);
+  const lines = pageEntries.map((entry, index) => {
     const rarity = rarityText(entry.character.rarity);
-    return `${rarity} **${entry.character.name}** x${entry.count} - ${entry.character.anime} (\`${entry.character.id}\`)`;
+    const absoluteIndex = pagination.start + index + 1;
+    return `\`${String(absoluteIndex).padStart(2, "0")}\` ${rarity} **${entry.character.name}** x${
+      entry.count
+    } - ${entry.character.anime} (\`${entry.character.id}\`)`;
   });
+
+  const footerParts = [];
+  if (pagination.totalPages > 1) {
+    footerParts.push(`Pagina ${pagination.page + 1}/${pagination.totalPages}`);
+  }
+  if (safeEntries.length > 0) {
+    footerParts.push(`Mostrando ${pagination.start + 1}-${pagination.end} de ${safeEntries.length}`);
+  } else {
+    footerParts.push("0 personajes en coleccion");
+  }
 
   return new EmbedBuilder()
     .setTitle(`Inventario de ${user}`)
     .setColor(0x9b59b6)
     .setDescription(lines.join("\n") || "Sin personajes.")
     .setFooter({
-      text:
-        entries.length > topEntries.length
-          ? `Mostrando ${topEntries.length} de ${entries.length} personajes`
-          : `${entries.length} personajes en coleccion`,
+      text: footerParts.join(" | "),
     });
 }
 
@@ -449,26 +515,45 @@ function buildInventoryCarouselEmbed(entries, user, index) {
   return embed;
 }
 
-function buildCharacterInfoEmbed(character, images) {
+function buildCharacterInfoEmbed(character, images, options = {}) {
   const sourceNames = Array.isArray(character?.sources) ? character.sources.join(", ") : character?.source;
-  const imageCount = Array.isArray(images) ? images.length : 0;
+  const safeImages = Array.isArray(images) ? images : [];
+  const imageCount = safeImages.length;
+  const pagination = resolvePagination(
+    imageCount,
+    options,
+    Math.max(1, Math.min(10, imageCount || Number(options?.pageSize) || 5))
+  );
+  const pageImages = safeImages.slice(pagination.start, pagination.end);
+  const pageLines = pageImages.map((image, index) => {
+    const absoluteIndex = pagination.start + index + 1;
+    return `\`${String(absoluteIndex).padStart(2, "0")}\` ${image?.source || "Fuente desconocida"}`;
+  });
+  const description = [
+    `**Anime:** ${character?.anime || "Desconocido"}`,
+    `**Rareza:** ${rarityText(character?.rarity)}`,
+    `**Ranking:** ${rankingText(character)}`,
+    `**Fuentes:** ${sourceNames || "Desconocida"}`,
+    `**Imagenes encontradas:** ${imageCount}`,
+    imageCount > 0 ? `**Pagina lista:** ${pagination.page + 1}/${pagination.totalPages}` : null,
+    imageCount > 0 && pageLines.length > 0 ? "" : null,
+    imageCount > 0 && pageLines.length > 0 ? "**Imagenes en esta pagina:**" : null,
+    imageCount > 0 && pageLines.length > 0 ? pageLines.join("\n") : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const footerText =
+    imageCount > 0
+      ? `Pagina ${pagination.page + 1}/${pagination.totalPages} | Usa Anterior/Siguiente en Lista o Carrusel para ver imagen`
+      : "No se encontraron imagenes adicionales";
+
   const embed = new EmbedBuilder()
     .setTitle(character?.name || "Personaje")
     .setColor(RARITY_COLORS[character?.rarity] || 0x5865f2)
-    .setDescription(
-      [
-        `**Anime:** ${character?.anime || "Desconocido"}`,
-        `**Rareza:** ${rarityText(character?.rarity)}`,
-        `**Ranking:** ${rankingText(character)}`,
-        `**Fuentes:** ${sourceNames || "Desconocida"}`,
-        `**Imagenes encontradas:** ${imageCount}`,
-      ].join("\n")
-    )
+    .setDescription(description)
     .setFooter({
-      text:
-        imageCount > 0
-          ? "Usa Anterior/Siguiente para navegar la galeria"
-          : "No se encontraron imagenes adicionales",
+      text: footerText,
     });
 
   if (character?.imageUrl) {

@@ -4,6 +4,8 @@ const {
   buildRollResultsCarouselEmbed,
 } = require("./embeds");
 
+const ROLL_RESULTS_LIST_PAGE_SIZE = 12;
+
 function groupRollResults(results) {
   const grouped = [];
   const byId = new Map();
@@ -44,8 +46,9 @@ async function sendRollResultsPagination(message, results, summary = {}) {
     idPrefix: "grollr",
     totalItems: entries.length,
     buildSlideEmbed: (index) => buildRollResultsCarouselEmbed(entries, index, summary),
-    buildListEmbed: () => buildRollResultsListEmbed(entries, summary),
+    buildListEmbed: (pagination) => buildRollResultsListEmbed(entries, summary, pagination),
     buildEmptyEmbed: () => buildRollResultsListEmbed([], summary),
+    listPageSize: ROLL_RESULTS_LIST_PAGE_SIZE,
   });
 }
 
