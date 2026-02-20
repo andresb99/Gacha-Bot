@@ -10,18 +10,19 @@ const DEFAULT_CAROUSEL_TIMEOUT_MS = 3 * 60 * 1000;
 function buildCarouselRow(prefix, sessionId, options = {}) {
   const disabled = Boolean(options?.disabled);
   const showingList = Boolean(options?.showingList);
+  const navigationDisabled = disabled || showingList;
   const toggleLabel = showingList ? "Carrusel" : "Lista";
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:prev`)
       .setLabel("Anterior")
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(disabled),
+      .setDisabled(navigationDisabled),
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:next`)
       .setLabel("Siguiente")
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(disabled),
+      .setDisabled(navigationDisabled),
     new ButtonBuilder()
       .setCustomId(`${prefix}:${sessionId}:list`)
       .setLabel(toggleLabel)
@@ -107,22 +108,24 @@ async function sendImageCarousel({
     const listId = `${idPrefix}:${sessionId}:list`;
 
     if (interaction.customId === prevId) {
-      showingList = false;
       currentIndex = (currentIndex - 1 + totalItems) % totalItems;
-      runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+      if (!showingList) {
+        runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+      }
       await interaction.update({
-        embeds: [buildSlideEmbed(currentIndex)],
+        embeds: [showingList ? buildListEmbed() : buildSlideEmbed(currentIndex)],
         components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
       });
       return;
     }
 
     if (interaction.customId === nextId) {
-      showingList = false;
       currentIndex = (currentIndex + 1) % totalItems;
-      runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+      if (!showingList) {
+        runSlideChangeHook(onSlideChange, currentIndex, totalItems);
+      }
       await interaction.update({
-        embeds: [buildSlideEmbed(currentIndex)],
+        embeds: [showingList ? buildListEmbed() : buildSlideEmbed(currentIndex)],
         components: [buildCarouselRow(idPrefix, sessionId, { showingList })],
       });
       return;
