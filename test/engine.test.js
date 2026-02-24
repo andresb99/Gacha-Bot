@@ -169,6 +169,66 @@ test("syncUser migra pity legacy a mythicPityCounter", async () => {
   assert.equal(user.pityCounter, 7);
 });
 
+test("syncUser conserva tiradas acumuladas al cambiar de dia", async () => {
+  const store = new InMemoryStore({
+    gachaState: createBoardState([createCharacter("r1", "rare", 27)]),
+    users: {
+      carryUser: {
+        username: "carry",
+        displayName: "Carry",
+        lastReset: "2000-01-01",
+        rollsLeft: 68,
+        totalRolls: 100,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {},
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+  const engine = new GachaEngine(store, createConfig({ rollsPerDay: 8 }));
+  engine.gachaState = createBoardState([createCharacter("r1", "rare", 27)]);
+
+  const { user, changed } = await engine.syncUser("carryUser", {
+    username: "carry",
+    displayName: "Carry",
+  });
+
+  assert.equal(changed, true);
+  assert.equal(user.rollsLeft, 68);
+});
+
+test("syncUser aplica minimo diario cuando las tiradas acumuladas son menores", async () => {
+  const store = new InMemoryStore({
+    gachaState: createBoardState([createCharacter("r1", "rare", 27)]),
+    users: {
+      lowUser: {
+        username: "low",
+        displayName: "Low",
+        lastReset: "2000-01-01",
+        rollsLeft: 3,
+        totalRolls: 20,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {},
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+  const engine = new GachaEngine(store, createConfig({ rollsPerDay: 8 }));
+  engine.gachaState = createBoardState([createCharacter("r1", "rare", 27)]);
+
+  const { user, changed } = await engine.syncUser("lowUser", {
+    username: "low",
+    displayName: "Low",
+  });
+
+  assert.equal(changed, true);
+  assert.equal(user.rollsLeft, 8);
+});
+
 test("getProfile expone thresholds de pity mitica", async () => {
   const store = new InMemoryStore({
     gachaState: createBoardState([createCharacter("r1", "rare", 27)]),

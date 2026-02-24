@@ -1622,8 +1622,11 @@ class GachaEngine {
     }
 
     if (user.lastReset !== today) {
+      const currentRollsLeft = Number.isFinite(Number(user.rollsLeft))
+        ? Math.max(0, Math.floor(Number(user.rollsLeft)))
+        : 0;
       user.lastReset = today;
-      user.rollsLeft = this.config.rollsPerDay;
+      user.rollsLeft = Math.max(this.config.rollsPerDay, currentRollsLeft);
       changed = true;
     }
 
