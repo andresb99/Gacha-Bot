@@ -555,3 +555,48 @@ test("findOwnersByCharacter devuelve usuarios y cantidades", async () => {
   assert.equal(result.owners[1].userId, "u2");
   assert.equal(result.owners[1].count, 1);
 });
+
+test("getInventory ordena por rareza descendente antes que cantidad", async () => {
+  const mythic = createCharacter("inv_m1", "mythic", 0.5, { name: "Mythic A" });
+  const legendary = createCharacter("inv_l1", "legendary", 2.5, { name: "Legendary B" });
+  const common = createCharacter("inv_c1", "common", 27, { name: "Common C" });
+
+  const store = new InMemoryStore({
+    gachaState: createBoardState([mythic, legendary, common]),
+    users: {
+      invUser: {
+        username: "inv",
+        displayName: "Inventory User",
+        lastReset: "2026-02-17",
+        rollsLeft: 8,
+        totalRolls: 3,
+        pityCounter: 0,
+        mythicPityCounter: 0,
+        inventory: {
+          [common.id]: createInventoryEntry(common, 10),
+          [legendary.id]: createInventoryEntry(legendary, 2),
+          [mythic.id]: createInventoryEntry(mythic, 1),
+        },
+        lastRollAt: null,
+        lastDailyClaimAt: null,
+      },
+    },
+  });
+
+  const engine = new GachaEngine(store, createConfig());
+  engine.gachaState = createBoardState([mythic, legendary, common]);
+
+  const result = await engine.getInventory("invUser", {
+    username: "inv",
+    displayName: "Inventory User",
+  });
+
+  assert.deepEqual(
+    result.entries.map((entry) => entry.character.rarity),
+    ["mythic", "legendary", "common"]
+  );
+  assert.deepEqual(
+    result.entries.map((entry) => entry.count),
+    [1, 2, 10]
+  );
+});

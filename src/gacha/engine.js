@@ -330,10 +330,6 @@ function generateBoard(characters, size) {
   return board.sort(compareBoardCharacters);
 }
 
-function rarityScore(rarity) {
-  return RARITY_ORDER.length - RARITY_ORDER.indexOf(rarity);
-}
-
 function rarityOrderIndex(rarity) {
   const index = RARITY_ORDER.indexOf(String(rarity || ""));
   return index >= 0 ? index : RARITY_ORDER.length;
@@ -2596,10 +2592,10 @@ class GachaEngine {
     }
 
     const sortedEntries = entries.sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count;
-      const rarityDiff = rarityScore(b.character.rarity) - rarityScore(a.character.rarity);
+      const rarityDiff = rarityOrderIndex(a?.character?.rarity) - rarityOrderIndex(b?.character?.rarity);
       if (rarityDiff !== 0) return rarityDiff;
-      return a.character.name.localeCompare(b.character.name);
+      if (b.count !== a.count) return b.count - a.count;
+      return String(a?.character?.name || "").localeCompare(String(b?.character?.name || ""));
     });
 
     return { user, entries: sortedEntries };
